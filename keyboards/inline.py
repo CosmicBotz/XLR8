@@ -93,3 +93,15 @@ def delete_search_keyboard(results: list) -> InlineKeyboardMarkup:
     builder.button(text="❌ Cancel", callback_data="delcancel")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def join_groups_keyboard(groups: list) -> InlineKeyboardMarkup:
+    """Inline buttons to join verified groups — shown in DM."""
+    builder = InlineKeyboardBuilder()
+    for g in groups[:5]:
+        name = g.get("group_name") or g.get("title") or "Join Group"
+        link = g.get("invite_link", "")
+        if link:
+            builder.button(text=f"📢 {name}", url=link)
+    builder.adjust(1)
+    return builder.as_markup()
