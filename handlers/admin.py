@@ -205,11 +205,199 @@ async def cmd_settings(message: Message, **kwargs):
     slots    = await CosmicBotz.get_slots(message.from_user.id)
     revoke   = settings.get("auto_revoke_minutes", 30)
 
+    settings = await CosmicBotz.get_settings()
+    quality  = settings.get("caption_quality", "1080p FHD | 720p HD | 480p WEB-DL")
+    audio    = settings.get("caption_audio",   "हिंदी (Hindi)")
+
+    wm_text = settings.get("watermark_text", "—")
+    wm_logo = settings.get("watermark_logo_id", "")
+
     await message.answer(
         "⚙️ <b>Bot Settings</b>\n\n"
         f"🔗 Auto-Revoke: <b>{revoke} min</b> — /setrevoke\n"
         f"👥 Admins: <b>{len(admins)}</b> — /admins\n"
         f"📢 Slots: <b>{len(slots)}</b> — /slots\n\n"
+        "✏️ <b>Caption</b>\n"
+        f"🎬 Quality: <code>{quality}</code>\n"
+        f"🔊 Audio: <code>{audio}</code>\n"
+        "/setquality · /setaudio · /setcaption\n\n"
+        "🖼 <b>Thumbnail Watermark</b>\n"
+        f"📝 Text: <code>{wm_text or '—'}</code>\n"
+        f"🏷 Logo: {'✅ Set' if wm_logo else '—'}\n"
+        "/setwatermark · /setlogo · /clearwatermark\n\n"
+        "🗑 /delcontent — remove title from index\n"
         "/addslot · /addcontent · /addadmin · /groups",
         parse_mode="HTML"
     )
+
+
+# ── /delcontent ───────────────────────────────────────────────────────────────
+
+@router.message(Command("delcontent"))
+@admin_only
+async def cmd_delcontent(message: Message, **kwargs):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "Usage: <code>/delcontent TITLE</code>\n\n"
+            "Example: <code>/delcontent Naruto</code>\n\n"
+            "To find exact title, search it first then copy the name.",
+            parse_mode="HTML"
+        )
+        return
+
+    query = args[1].strip()
+
+    # Search for matching titles
+    from database import CosmicBotz as _db
+    results = await _db.search_title(query)
+
+    if not results:
+        await message.answer(f"❌ No title found matching: <b>{query}</b>", parse_mode="HTML")
+        return
+
+    if len(results) == 1:
+        item = results[0]
+        from keyboards.inline import confirm_delete_keyboard
+        await message.answer(
+            f"⚠️ Delete <b>{item['title']}</b> ({item.get('media_type','?')}) from index?",
+            reply_markup=confirm_delete_keyboard(str(item["_id"]), item["title"]),
+            parse_mode="HTML"
+        )
+    else:
+        from keyboards.inline import delete_search_keyboard
+        await message.answer(
+            f"🔍 Found <b>{len(results)}</b> matches. Select one to delete:",
+            reply_markup=delete_search_keyboard(results[:10]),
+            parse_mode="HTML"
+        )
+
+
+@router.callback_query(F.data.startswith("delconfirm_"))
+async def cb_confirm_delete(call: CallbackQuery):
+    filter_id = call.data.split("_", 1)[1]
+    from database import CosmicBotz as _db
+    from bson import ObjectId
+    db   = _db.db()
+    item = await db.filters.find_one({"_id": ObjectId(filter_id)})
+    if not item:
+        await call.message.edit_text("⚠️ Already deleted or not found.")
+        return
+    await db.filters.delete_one({"_id": ObjectId(filter_id)})
+    await call.message.edit_text(
+        f"✅ <b>{item['title']}</b> removed from index.",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("delselect_"))
+async def cb_delete_select(call: CallbackQuery):
+    filter_id = call.data.split("_", 1)[1]
+    from database import CosmicBotz as _db
+    from bson import ObjectId
+    item = await _db.get_filter_by_id(filter_id)
+    if not item:
+        await call.answer("Not found.", show_alert=True)
+        return
+    from keyboards.inline import confirm_delete_keyboard
+    await call.message.edit_text(
+        f"⚠️ Delete <b>{item['title']}</b> ({item.get('media_type','?')}) from index?",
+        reply_markup=confirm_delete_keyboard(filter_id, item["title"]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "delcancel")
+async def cb_delete_cancel(call: CallbackQuery):
+    await call.message.edit_text("❌ Cancelled.")
+
+
+# ── /setcaption ───────────────────────────────────────────────────────────────
+
+@router.message(Command("setcaption"))
+@owner_only
+async def cmd_setcaption(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    settings = await _db.get_settings()
+    quality  = settings.get("caption_quality", "1080p FHD | 720p HD | 480p WEB-DL")
+    audio    = settings.get("caption_audio",   "हिंदी (Hindi)")
+
+    await message.answer(
+        "✏️ <b>Caption Settings</b>\n\n"
+        f"🎬 <b>Quality:</b> <code>{quality}</code>\n"
+        f"🔊 <b>Audio:</b> <code>{audio}</code>\n\n"
+        "To change:\n"
+        "<code>/setquality 1080p FHD | 720p HD | 480p WEB-DL</code>\n"
+        "<code>/setaudio हिंदी (Hindi) #Official</code>",
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("setquality"))
+@owner_only
+async def cmd_setquality(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Usage: <code>/setquality 1080p FHD | 720p HD | 480p WEB-DL</code>", parse_mode="HTML")
+        return
+    value = args[1].strip()
+    await _db.update_setting("caption_quality", value)
+    await message.answer(f"✅ Quality set to:\n<code>{value}</code>", parse_mode="HTML")
+
+
+@router.message(Command("setaudio"))
+@owner_only
+async def cmd_setaudio(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Usage: <code>/setaudio हिंदी (Hindi) #Official</code>", parse_mode="HTML")
+        return
+    value = args[1].strip()
+    await _db.update_setting("caption_audio", value)
+    await message.answer(f"✅ Audio set to:\n<code>{value}</code>", parse_mode="HTML")
+
+
+# ── Watermark commands ────────────────────────────────────────────────────────
+
+@router.message(Command("setwatermark"))
+@owner_only
+async def cmd_setwatermark(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "Usage: <code>/setwatermark YourChannelName</code>\n\n"
+            "This text appears as a pill in the top-right of every thumbnail.",
+            parse_mode="HTML"
+        )
+        return
+    value = args[1].strip()
+    await _db.update_setting("watermark_text", value)
+    await message.answer(f"✅ Watermark text set to: <code>{value}</code>", parse_mode="HTML")
+
+
+@router.message(Command("setlogo"))
+@owner_only
+async def cmd_setlogo(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.answer(
+            "📸 Reply to a <b>photo/logo</b> with <code>/setlogo</code>\n\n"
+            "The logo will appear in the top-right of every thumbnail alongside your watermark text.",
+            parse_mode="HTML"
+        )
+        return
+    file_id = message.reply_to_message.photo[-1].file_id
+    await _db.update_setting("watermark_logo_id", file_id)
+    await message.answer("✅ Logo watermark saved! It will appear on all new thumbnails.", parse_mode="HTML")
+
+
+@router.message(Command("clearwatermark"))
+@owner_only
+async def cmd_clearwatermark(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    await _db.update_setting("watermark_text", "")
+    await _db.update_setting("watermark_logo_id", "")
+    await message.answer("✅ Watermark cleared.", parse_mode="HTML")
