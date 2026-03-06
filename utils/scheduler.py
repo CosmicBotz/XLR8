@@ -1,27 +1,18 @@
+"""
+Scheduler — reserved for future tasks.
+Invite link revocation is handled natively by Telegram via expire_date.
+"""
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from aiogram import Bot
 import logging
 
-logger = logging.getLogger(__name__)
+logger    = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
-def setup_scheduler(bot: Bot):
-    """Initialize and start the revoke scheduler."""
-    from services.link_gen import revoke_expired_links
-
-    async def revoke_job():
-        await revoke_expired_links(bot)
-
-    scheduler.add_job(
-        revoke_job,
-        trigger="interval",
-        minutes=1,
-        id="revoke_links",
-        replace_existing=True
-    )
+def setup_scheduler():
+    # No jobs needed — Telegram handles invite link expiry via expire_date
     scheduler.start()
-    logger.info("✅ Scheduler started — checking expired links every minute.")
+    logger.info("✅ Scheduler started.")
 
 
 def stop_scheduler():
