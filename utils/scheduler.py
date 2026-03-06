@@ -1,16 +1,29 @@
 """
-Scheduler — reserved for future tasks.
-Invite link revocation is handled natively by Telegram via expire_date.
+Scheduler — persists delete jobs so Render spin-down doesn't lose them.
+Jobs are stored in MongoDB so they survive restarts.
 """
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.mongodb import MongoDBJobStore
+from apscheduler.executors.asyncio import AsyncIOExecutor
 import logging
 
+from config import MONGO_URI
+
 logger    = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(
+    jobstores={
+        "default": MongoDBJobStore(
+            database="CosmicBotz",
+            collection="scheduler_jobs",
+            host=MONGO_URI
+        )
+    },
+    executors={"default": AsyncIOExecutor()},
+    job_defaults={"coalesce": True, "max_instances": 5},
+)
 
 
 def setup_scheduler():
-    # No jobs needed — Telegram handles invite link expiry via expire_date
     scheduler.start()
     logger.info("✅ Scheduler started.")
 
