@@ -66,12 +66,16 @@ def build_media_data(tmdb_result: dict, media_type: str) -> dict:
     poster_url = f"{TMDB_IMAGE_BASE}{poster_path}" if poster_path else None
     overview = tmdb_result.get("overview", "")
 
+    backdrop_path = tmdb_result.get("backdrop_path", "")
+    backdrop_url  = f"{TMDB_IMAGE_BASE}{backdrop_path}" if backdrop_path else None
+
     data = {
         "title": title,
         "media_type": media_type,
         "tmdb_id": tmdb_result.get("id"),
         "overview": overview,
         "poster_url": poster_url,
+        "backdrop_url": backdrop_url,
         "genres": ", ".join(genres) if genres else "N/A",
         "quality": "Multiple",
         "audio": "हिंदी (Hindi)",
