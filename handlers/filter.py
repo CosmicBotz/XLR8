@@ -17,6 +17,9 @@ from keyboards.inline import index_results_keyboard, watch_download_keyboard, jo
 router   = Router()
 ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
+# Keep strong references to tasks so GC doesn't cancel them before they fire
+_pending_tasks: set = set()
+
 
 async def _delete_after(bot: Bot, chat_id: int, message_ids: list, delay: int):
     await asyncio.sleep(delay)
@@ -181,9 +184,11 @@ async def cb_show_title(call: CallbackQuery, bot: Bot):
     # After link expires: delete bot post + user's search msg
     if sent:
         delay = revoke_minutes * 60
-        asyncio.create_task(
+        task = asyncio.create_task(
             _delete_after(bot, chat_id, [sent.message_id, user_search_msg_id], delay)
         )
+        _pending_tasks.add(task)
+        task.add_done_callback(_pending_tasks.discard)
 
 
 @router.callback_query(F.data.startswith("nf_"))
