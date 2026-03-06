@@ -291,14 +291,20 @@ class Database:
         })
         return True
 
-    async def verify_group(self, group_id: int, verified_by: int) -> bool:
+    async def verify_group(
+        self,
+        group_id: int,
+        verified_by: int,
+        invite_link: str = ""
+    ) -> bool:
         db = self.db()
         result = await db.groups.update_one(
             {"group_id": group_id},
             {"$set": {
-                "verified":    True,
-                "verified_by": verified_by,
-                "verified_at": datetime.utcnow()
+                "verified":     True,
+                "verified_by":  verified_by,
+                "verified_at":  datetime.utcnow(),
+                "invite_link":  invite_link,
             }},
             upsert=True
         )
@@ -318,6 +324,12 @@ class Database:
 
     async def get_group(self, group_id: int) -> dict | None:
         return await self.db().groups.find_one({"group_id": group_id})
+
+    async def get_verified_group_links(self) -> list:
+        """Return list of verified groups that have invite links stored."""
+        db = self.db()
+        cursor = db.groups.find({"verified": True, "invite_link": {"$ne": ""}})
+        return await cursor.to_list(length=50)
 
     async def get_all_groups(self, verified_only: bool = False) -> list:
         db = self.db()
