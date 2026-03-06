@@ -16,7 +16,7 @@ from database import CosmicBotz
 from middlewares.auth import admin_only
 from services.tmdb import search_tmdb, get_tv_details, get_movie_details, build_media_data
 from services.caption import build_caption
-from services.image import fetch_and_resize
+from .image import fetch_and_resize
 from keyboards.inline import (
     tmdb_results_keyboard, media_type_keyboard,
     confirm_add_keyboard, watch_download_keyboard
