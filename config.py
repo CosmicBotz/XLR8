@@ -10,7 +10,7 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0))
 
 # ── MongoDB (singleton: COSMICBOTZ) ───────────────────────────────────────────
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME   = "COSMICBOTZ"   # hardcoded — do not change
+DB_NAME   = "CosmicBotz"   # hardcoded — do not change
 
 # ── TMDB ──────────────────────────────────────────────────────────────────────
 TMDB_API_KEY   = os.getenv("TMDB_API_KEY")
