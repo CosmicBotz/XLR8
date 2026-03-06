@@ -45,7 +45,7 @@ async def build_caption(media_data: dict) -> str:
     genres = media_data.get("genres", "N/A")
     label  = MEDIA_TYPE_LABEL.get(mtype, "Series")
 
-    lines = [f"<blockquote><b>{title}</b></blockquote>", ""]
+    lines = [f"<b>{title}</b>"]
     lines.append("<blockquote>")
 
     if mtype in ("anime", "tvshow"):
@@ -54,13 +54,13 @@ async def build_caption(media_data: dict) -> str:
         season   = media_data.get("seasons", 1)
         status   = media_data.get("status", "N/A")
         lines += [
-            f"➣ <b>Type :</b> {label}{f' ({year})' if year else ''}",
-            f"➣ <b>Status :</b> {status}",
-            f"➣ <b>No of Episodes :</b> {episodes}",
-            f"➣ <b>Season :</b> {season}",
-            f"➣ <b>Quality :</b> {quality}",
-            f"➣ <b>Audio :</b> {audio}",
-            f"➣ <b>Genre :</b> {genres}",
+            f"▶ <b>Type :</b> {label}{f' ({year})' if year else ''}",
+            f"▶ <b>Status :</b> {status}",
+            f"▶ <b>No of Episodes :</b> {episodes}",
+            f"▶ <b>Season :</b> {season}",
+            f"▶ <b>Quality :</b> {quality}",
+            f"▶ <b>Audio :</b> {audio}",
+            f"<b>Genre :</b> {genres}",
         ]
     elif mtype == "movie":
         year    = (media_data.get("release_date") or "")[:4]
