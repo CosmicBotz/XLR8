@@ -5,7 +5,7 @@ GROUP only for content delivery.
 DM: show join group buttons, no content.
 Silent on no results — never send "not found" noise.
 """
-import asyncio
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatType
@@ -183,12 +183,17 @@ async def cb_show_title(call: CallbackQuery, bot: Bot):
 
     # After link expires: delete bot post + user's search msg
     if sent:
-        delay = revoke_minutes
-        task = asyncio.create_task(
-            _delete_after(bot, chat_id, [sent.message_id, user_search_msg_id], delay)
+        delay = revoke_minutes * 60
+        from utils.scheduler import scheduler
+        from config import BOT_TOKEN
+        run_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        scheduler.add_job(
+            _delete_messages,
+            trigger="date",
+            run_date=run_at,
+            args=[chat_id, [sent.message_id, user_search_msg_id], BOT_TOKEN],
+            misfire_grace_time=120
         )
-        _pending_tasks.add(task)
-        task.add_done_callback(_pending_tasks.discard)
 
 
 @router.callback_query(F.data.startswith("nf_"))
