@@ -101,15 +101,22 @@ class Database:
         db = self.db()
         return await db.filters.find_one({"_id": ObjectId(filter_id)})
 
-    async def update_filter_post(self, filter_id: str, channel_id: int, message_id: int):
-        """Attach channel post location to a filter after it's been posted."""
+    async def update_filter_post(
+        self,
+        filter_id: str,
+        log_channel_id: int,
+        message_id: int,
+        permanent_invite: str
+    ):
+        """Store log channel post location + permanent invite link after /addcontent."""
         db = self.db()
         await db.filters.update_one(
             {"_id": ObjectId(filter_id)},
             {"$set": {
-                "channel_id": channel_id,
-                "message_id": message_id,
-                "posted":     True
+                "log_channel_id":   log_channel_id,
+                "message_id":       message_id,
+                "permanent_invite": permanent_invite,
+                "posted":           True
             }}
         )
 
