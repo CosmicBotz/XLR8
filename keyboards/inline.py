@@ -105,3 +105,12 @@ def join_groups_keyboard(groups: list) -> InlineKeyboardMarkup:
             builder.button(text=f"📢 {name}", url=link)
     builder.adjust(1)
     return builder.as_markup()
+
+
+def confirm_remove_slot_keyboard(channel_id: int, slot_name: str):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Yes, Remove", callback_data=f"rmslot_{channel_id}")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel")]
+    ])
+    return kb
