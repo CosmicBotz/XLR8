@@ -202,9 +202,21 @@ class Database:
     # ══════════════════════════════════════════════════════════════════════════
 
     async def get_settings(self) -> dict:
-        db = self.db()
+        db  = self.db()
         doc = await db.settings.find_one({"owner_id": OWNER_ID})
-        return doc if doc else {"auto_revoke_minutes": AUTO_REVOKE_MINUTES}
+        defaults = {
+            "auto_revoke_minutes": AUTO_REVOKE_MINUTES,
+            "caption_quality":     "1080p FHD | 720p HD | 480p WEB-DL",
+            "caption_audio":       "हिंदी (Hindi)",
+            "watermark_text":      "",
+            "watermark_logo_id":   "",
+        }
+        if not doc:
+            return defaults
+        # Fill missing keys with defaults
+        for k, v in defaults.items():
+            doc.setdefault(k, v)
+        return doc
 
     async def update_setting(self, key: str, value):
         db = self.db()
