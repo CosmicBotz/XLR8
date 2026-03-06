@@ -29,6 +29,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")  # e.g. https://your-app.onrender.com
 # Bot picks one randomly on each /start.
 # If the list is empty OR sending the photo fails → falls back to plain text.
 START_PICS: list[str] = [
+      "https://graph.org/file/8cfa23d805d5de1863ac4-8c1cf8a759523d8485.jpg",
     # "https://example.com/image1.jpg",
     # "AgACAgIAAxk...file_id_here...",
     # Add as many as you like ↓
