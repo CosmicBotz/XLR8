@@ -1,22 +1,24 @@
 """
 Filter handler — letter index + title search.
-When user taps a result → bot sends poster + caption + Watch/Download invite link.
-Works in both DMs and verified groups.
+When user taps a result:
+  → Bot copies image + caption from log channel message (no TMDB call)
+  → Adds a NEW expiring invite link button (fresh each request)
+Works in DMs and verified groups.
 """
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, URLInputFile
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery
+from aiogram.enums import ChatType
 
 from database import CosmicBotz
-from services.caption import build_caption, build_index_caption
 from services.link_gen import create_invite_link
+from services.caption import build_index_caption
 from keyboards.inline import index_results_keyboard, watch_download_keyboard
-from config import LOG_CHANNEL_ID
 
-router  = Router()
+router   = Router()
 ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 
-# ── Text handler: single letter or search query ───────────────────────────────
+# ── Text: single letter or search ────────────────────────────────────────────
 
 @router.message(F.text)
 async def handle_text(
@@ -32,13 +34,13 @@ async def handle_text(
     if text.startswith("/"):
         return
 
-    # Single letter → index browse
+    # Single letter → index
     if len(text) == 1 and text.upper() in ALPHABET:
         letter  = text.upper()
         results = await CosmicBotz.get_by_letter(letter)
         if not results:
             await message.answer(
-                f"📂 <b>Index: '{letter}'</b>\n\nNo titles found for this letter.",
+                f"📂 <b>Index: '{letter}'</b>\n\nNo titles found.",
                 parse_mode="HTML"
             )
             return
@@ -49,7 +51,7 @@ async def handle_text(
         )
         return
 
-    # Multi-char → title search
+    # Multi-char → search
     if len(text) >= 2:
         results = await CosmicBotz.search_title(text)
         if not results:
@@ -68,14 +70,13 @@ async def handle_text(
 # ── User taps a title button ──────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("show_"))
-async def cb_show_title(call: CallbackQuery):
+async def cb_show_title(call: CallbackQuery, bot: Bot):
     """
-    User tapped a title from the index.
-    Bot sends: poster + caption + Watch/Download invite link button.
+    Copy image + caption from log channel post.
+    Attach a fresh expiring invite link button.
+    No TMDB call — reuses what was stored on /addcontent.
     """
-    from bson import ObjectId
     filter_id = call.data.split("_", 1)[1]
-
     await call.answer()
 
     item = await CosmicBotz.get_filter_by_id(filter_id)
@@ -83,51 +84,44 @@ async def cb_show_title(call: CallbackQuery):
         await call.answer("⚠️ Title not found.", show_alert=True)
         return
 
-    # Get the slot's channel to generate invite link from
-    slots = await CosmicBotz.get_slots_all()
-    if not slots:
-        await call.answer("⚠️ No channel configured yet.", show_alert=True)
-        return
+    log_channel_id = item.get("log_channel_id")
+    message_id     = item.get("message_id")
 
-    # Use first active slot to generate invite link
-    slot = slots[0]
-    channel_id = slot["channel_id"]
-
-    settings       = await CosmicBotz.get_settings()
-    revoke_minutes = settings.get("auto_revoke_minutes", 30)
-
-    try:
-        from aiogram import Bot
-        bot = call.bot
-        invite_link = await create_invite_link(bot, channel_id, revoke_minutes)
-    except Exception as e:
-        await call.message.answer(
-            f"⚠️ Could not generate link. Make sure bot is admin in the channel.\n<code>{e}</code>",
-            parse_mode="HTML"
+    if not log_channel_id or not message_id:
+        await call.answer(
+            "⚠️ This title hasn't been posted yet. Ask admin to re-add it.",
+            show_alert=True
         )
         return
 
-    caption  = build_caption(item)
-    poster   = item.get("poster_url")
-    expires  = f"{revoke_minutes} min"
-    kb       = watch_download_keyboard(invite_link, expires)
+    # Generate fresh expiring invite link
+    settings       = await CosmicBotz.get_settings()
+    revoke_minutes = settings.get("auto_revoke_minutes", 30)
+    slots          = await CosmicBotz.get_slots_all()
 
+    invite_link = None
+    if slots:
+        try:
+            invite_link = await create_invite_link(bot, slots[0]["channel_id"], revoke_minutes)
+        except Exception:
+            # Fall back to permanent invite if generating fails
+            invite_link = item.get("permanent_invite") or None
+
+    kb = watch_download_keyboard(invite_link, f"{revoke_minutes} min") if invite_link else None
+
+    # Copy the log channel message to user with new button
     try:
-        if poster:
-            await call.message.answer_photo(
-                photo=URLInputFile(poster),
-                caption=caption,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-        else:
-            await call.message.answer(
-                caption,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-    except Exception:
-        await call.message.answer(caption, reply_markup=kb, parse_mode="HTML")
+        await bot.copy_message(
+            chat_id=call.message.chat.id,
+            from_chat_id=log_channel_id,
+            message_id=message_id,
+            reply_markup=kb
+        )
+    except Exception as e:
+        await call.message.answer(
+            f"⚠️ Could not retrieve this title's post.\n<code>{e}</code>",
+            parse_mode="HTML"
+        )
 
 
 @router.callback_query(F.data.startswith("nf_"))
