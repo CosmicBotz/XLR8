@@ -128,9 +128,9 @@ async def cb_select_tmdb(call: CallbackQuery, state: FSMContext, bot: Bot):
             caption=caption, parse_mode="HTML"
         )
     except Exception as e:
-        await call.message.answer(f"⚠️ Thumbnail error: {e}
+        await call.message.answer("Thumbnail error: " + str(e), parse_mode="HTML")
 
-{caption}", parse_mode="HTML")
+
 
     await call.message.answer(
         "✅ Confirm adding to index?\n"
