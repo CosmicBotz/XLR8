@@ -8,6 +8,7 @@ No TMDB calls on user requests — everything reused from log channel copy.
 """
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, URLInputFile, BufferedInputFile
+from io import BytesIO
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,7 +17,7 @@ from database import CosmicBotz
 from middlewares.auth import admin_only
 from services.tmdb import search_tmdb, get_tv_details, get_movie_details, build_media_data
 from services.caption import build_caption
-from .image import fetch_and_resize
+from services.thumbnail import build_thumbnail
 from keyboards.inline import (
     tmdb_results_keyboard, media_type_keyboard,
     confirm_add_keyboard, watch_download_keyboard
@@ -108,24 +109,28 @@ async def cb_select_tmdb(call: CallbackQuery, state: FSMContext, bot: Bot):
     await state.update_data(media_data=json.dumps(media_data))
 
     # Preview to admin (resized)
-    caption = build_caption(media_data)
+    caption = await build_caption(media_data)
     poster  = media_data.get("poster_url")
     try:
-        if poster:
-            resized = await fetch_and_resize(poster)
-            if resized:
-                await call.message.answer_photo(
-                    BufferedInputFile(resized.read(), filename="poster.jpg"),
-                    caption=caption, parse_mode="HTML"
-                )
-            else:
-                await call.message.answer_photo(
-                    URLInputFile(poster), caption=caption, parse_mode="HTML"
-                )
-        else:
-            await call.message.answer(caption, parse_mode="HTML")
-    except Exception:
-        await call.message.answer(caption, parse_mode="HTML")
+        settings = await CosmicBotz.get_settings()
+        wm_text  = settings.get("watermark_text", "")
+        wm_logo  = settings.get("watermark_logo_id", "")
+        thumb = await build_thumbnail(
+            poster_url=poster,
+            backdrop_url=media_data.get("backdrop_url"),
+            watermark=wm_text,
+            watermark_logo_id=wm_logo,
+            bot=call.bot,
+            meta={**media_data, "_category": media_data.get("media_type", "anime")}
+        )
+        await call.message.answer_photo(
+            BufferedInputFile(thumb, filename="poster.jpg"),
+            caption=caption, parse_mode="HTML"
+        )
+    except Exception as e:
+        await call.message.answer(f"⚠️ Thumbnail error: {e}
+
+{caption}", parse_mode="HTML")
 
     await call.message.answer(
         "✅ Confirm adding to index?\n"
@@ -156,6 +161,7 @@ async def cb_confirm_add(call: CallbackQuery, state: FSMContext, bot: Bot):
         await call.message.edit_text("⚠️ This title already exists in the index!")
         return
 
+    settings = await CosmicBotz.get_settings()
     title  = media_data.get("title", "?")
     letter = title[0].upper()
     poster = media_data.get("poster_url")
@@ -178,36 +184,26 @@ async def cb_confirm_add(call: CallbackQuery, state: FSMContext, bot: Bot):
             permanent_invite = None
 
     # ── Build caption + keyboard for log channel ──────────────────────────────
-    caption = build_caption(media_data)
+    caption = await build_caption(media_data)
     kb      = watch_download_keyboard(permanent_invite) if permanent_invite else None
 
     # ── Post to log channel (resized 1280x720) ────────────────────────────────
     try:
-        if poster:
-            resized = await fetch_and_resize(poster)
-            if resized:
-                log_msg = await bot.send_photo(
-                    chat_id=LOG_CHANNEL_ID,
-                    photo=BufferedInputFile(resized.read(), filename="poster.jpg"),
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-            else:
-                log_msg = await bot.send_photo(
-                    chat_id=LOG_CHANNEL_ID,
-                    photo=URLInputFile(poster),
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-        else:
-            log_msg = await bot.send_message(
-                chat_id=LOG_CHANNEL_ID,
-                text=caption,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
+        thumb = await build_thumbnail(
+            poster_url=poster,
+            backdrop_url=media_data.get("backdrop_url"),
+            watermark=settings.get("watermark_text", ""),
+            watermark_logo_id=settings.get("watermark_logo_id", ""),
+            bot=bot,
+            meta={**media_data, "_category": media_data.get("media_type", "anime")}
+        )
+        log_msg = await bot.send_photo(
+            chat_id=LOG_CHANNEL_ID,
+            photo=BufferedInputFile(thumb, filename="poster.jpg"),
+            caption=caption,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
     except Exception as e:
         await call.message.edit_text(f"❌ Failed to post to Log Channel: {e}")
         return
