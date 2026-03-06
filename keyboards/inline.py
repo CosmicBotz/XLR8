@@ -75,3 +75,21 @@ def admin_list_keyboard(admins: list) -> InlineKeyboardMarkup:
     builder.button(text="🔙 Back", callback_data="back_settings")
     builder.adjust(2)
     return builder.as_markup()
+
+
+def confirm_delete_keyboard(filter_id: str, title: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"🗑 Yes, Delete",  callback_data=f"delconfirm_{filter_id}")
+    builder.button(text="❌ Cancel",         callback_data="delcancel")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def delete_search_keyboard(results: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for item in results:
+        label = f"{item.get('title','?')} ({item.get('media_type','?')})"
+        builder.button(text=label[:50], callback_data=f"delselect_{str(item['_id'])}")
+    builder.button(text="❌ Cancel", callback_data="delcancel")
+    builder.adjust(1)
+    return builder.as_markup()
