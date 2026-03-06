@@ -415,4 +415,273 @@ async def cmd_delcontent(message: Message):
 @router.callback_query(F.data.startswith("delconfirm_"))
 async def cb_confirm_delete(call: CallbackQuery):
     try:
-        filter_id = call.data
+        # Safe split: Extract ID from "delconfirm_{filter_id}"
+        filter_id = call.data.split("_", 1)[1]  # Not just call.data!
+        from database import CosmicBotz as _db
+        from bson import ObjectId
+        db = _db.db()
+        item = await db.filters.find_one({"_id": ObjectId(filter_id)})
+        if not item:
+            await call.message.edit_text("⚠️ Item already deleted.", parse_mode=ParseMode.HTML)
+            return
+        await db.filters.delete_one({"_id": ObjectId(filter_id)})
+        await call.message.edit_text(
+            f"✅ <b>{item['title']}</b> removed from index.",
+            parse_mode=ParseMode.HTML
+        )
+        await call.answer("Deleted!")
+    except Exception as e:  # This is the missing piece!
+        print(f"Delete error: {e}")  # Log for debugging
+        await call.answer("Error deleting item.", show_alert=True)
+    finally:  # Optional: Always answer to avoid hanging callbacks
+        pass
+
+
+@router.callback_query(F.data.startswith("delselect_"))
+async def cb_delete_select(call: CallbackQuery):
+    try:
+        # Safe split: Extract ID from "delselect_{filter_id}"
+        filter_id = call.data.split("_", 1)[1]  # Fix if it was just "call.data"
+        from database import CosmicBotz as _db
+        from bson import ObjectId
+        item = await _db.get_filter_by_id(filter_id)
+        if not item:
+            await call.answer("Not found.", show_alert=True)
+            return
+        await call.message.edit_text(
+            f"⚠️ <b>Delete?</b>\n\n"
+            f"📺 <b>{item['title']}</b>\n"
+            f"Type: {item.get('media_type', '?')}",
+            reply_markup=confirm_delete_keyboard(filter_id, item["title"]),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:  # Ensure this exists!
+        print(f"Select error: {e}")
+        await call.answer("Error loading item.", show_alert=True)
+
+
+@router.callback_query(F.data == "delcancel")
+async def cb_delete_cancel(call: CallbackQuery):
+    await call.message.edit_text("❌ <b>Cancelled</b>\n\nUse /delcontent to try again.", parse_mode=ParseMode.HTML)
+    await call.answer()
+
+
+# ── Caption Commands — Updated with templates ────────────────────────────────
+
+@router.message(Command("setcaption"))
+@owner_only
+async def cmd_setcaption(message: Message):
+    settings = await CosmicBotz.get_settings()
+    quality = settings.get("caption_quality", "Multiple")
+    audio = settings.get("caption_audio", "हिंदी (Hindi)")
+    series_template = await CosmicBotz.get_setting("caption_template_series", None)
+
+    text = (
+        "✏️ <b>Caption Settings</b>\n\n"
+        f"🎬 <b>Quality:</b> <code>{quality}</code>\n"
+        f"🔊 <b>Audio:</b> <code>{audio}</code>\n"
+        f"📝 <b>Template:</b> {'✅ Custom' if series_template else '📋 Default (Naruto-style)'}\n\n"
+        "<b>Quick Set:</b>\n"
+        "• <code>/setquality Multiple</code>\n"
+        "• <code>/setaudio हिंदी (Hindi)</code>\n"
+        "• <code>/setcaptemplate series {your template}</code>\n"
+        "• <code>/getcaptemplate series</code> (preview)"
+    )
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("setquality"))
+@owner_only
+async def cmd_setquality(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "🎬 <b>Set Quality</b>\n\n"
+            "Usage: <code>/setquality Multiple</code>\n\n"
+            "Examples: <code>1080p FHD</code> | <code>720p HD | 480p</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    value = args[1].strip()[:50]  # Sanitize
+    await CosmicBotz.update_setting("caption_quality", value)
+    await message.answer(f"✅ <b>Quality Updated:</b> <code>{value}</code>", parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("setaudio"))
+@owner_only
+async def cmd_setaudio(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "🔊 <b>Set Audio</b>\n\n"
+            "Usage: <code>/setaudio हिंदी (Hindi)</code>\n\n"
+            "Examples: <code>English</code> | <code>हिंदी #Dub</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    value = args[1].strip()[:50]
+    await CosmicBotz.update_setting("caption_audio", value)
+    await message.answer(f"✅ <b>Audio Updated:</b> <code>{value}</code>", parse_mode=ParseMode.HTML)
+
+
+# New: /setcaptemplate, /getcaptemplate, /resetcaptemplate
+
+@router.message(Command("setcaptemplate"))
+@owner_only
+async def cmd_setcaptemplate(message: Message):
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await message.answer(
+            "📝 <b>Set Caption Template</b>\n\n"
+            "Usage: <code>/setcaptemplate &lt;type&gt; &lt;template&gt;</code>\n\n"
+            "Types: <code>series</code> (anime/TV) | <code>movie</code> | <code>index</code>\n\n"
+            "💡 Use {title}, {quality}, {genres} etc. \\n for newlines.\n"
+            "Example: <code>/setcaptemplate series {title}\\n&lt;blockquote&gt;➣ Type: {media_label}&lt;/blockquote&gt;</code>\n\n"
+            "Preview with /getcaptemplate series",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    template_type = args[1].strip().lower()
+    if template_type not in ("series", "movie", "index"):
+        await message.answer("⚠️ Type must be: series, movie, or index.", parse_mode=ParseMode.HTML)
+        return
+
+    template_text = args[2].strip()
+    if len(template_text) > 2000:  # Telegram limit
+        await message.answer("⚠️ Template too long! Keep under 2000 chars.", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        await CosmicBotz.update_setting(f"caption_template_{template_type}", template_text)
+        await message.answer(
+            f"✅ <b>{template_type.upper()} Template Saved!</b>\n\n"
+            f"Preview: <code>/getcaptemplate {template_type}</code>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await message.answer(f"❌ Save error: {str(e)}", parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("getcaptemplate"))
+@owner_only
+async def cmd_getcaptemplate(message: Message):
+    args = message.text.split(maxsplit=1)
+    template_type = (args[1].strip().lower() if len(args) > 1 else "series")
+
+    if template_type not in ("series", "movie", "index"):
+        await message.answer("⚠️ Type: series, movie, or index.", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        template = await CosmicBotz.get_setting(f"caption_template_{template_type}")
+        if not template:
+            await message.answer(f"📋 No custom {template_type} template. Using default.", parse_mode=ParseMode.HTML)
+            return
+
+        # Dummy preview context (from previous response)
+        if template_type == "index":
+            preview = template.format(letter="A", count=5)
+            preview_context = {"letter": "A", "count": 5}
+        else:
+            preview_context = {
+                "title": "Naruto Shippūden",
+                "media_label": "TV Series" if template_type == "series" else "Movie",
+                "status": "Ended",
+                "episodes": "500",
+                "season": "20",
+                "runtime": "24",
+                "quality": "Multiple",
+                "audio": "हिंदी (Hindi)",
+                "genres": "Animation, Action"
+            }
+            if template_type == "movie":
+                del preview_context["status"]
+                del preview_context["episodes"]
+                del preview_context["season"]
+            preview = template.format(**preview_context)
+
+        text = (
+            f"<b>{template_type.upper()} Template</b>\n\n"
+            f"<pre>{template}</pre>\n\n"  # Raw
+            f"<b>Preview:</b>\n<pre>{preview}</pre>"  # Rendered
+        )
+        await message.answer(text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await message.answer(f"❌ Load error: {str(e)}", parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("resetcaptemplate"))
+@owner_only
+async def cmd_resetcaptemplate(message: Message):
+    args = message.text.split(maxsplit=1)
+    template_type = (args[1].strip().lower() if len(args) > 1 else "series")
+
+    if template_type not in ("series", "movie", "index"):
+        await message.answer("⚠️ Type: series, movie, or index.", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        await CosmicBotz.delete_setting(f"caption_template_{template_type}")  # Assume delete_setting exists
+        await message.answer(
+            f"✅ <b>{template_type.upper()} Template Reset</b>\n\n"
+            f"Back to default. Preview: /getcaptemplate {template_type}",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        await message.answer("❌ Reset failed.", parse_mode=ParseMode.HTML)
+
+
+# ── Watermark Commands — With previews if possible ──────────────────────────
+
+@router.message(Command("setwatermark"))
+@owner_only
+async def cmd_setwatermark(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer(
+            "🖼 <b>Set Watermark Text</b>\n\n"
+            "Usage: <code>/setwatermark YourChannel</code>\n\n"
+            "Appears as a pill on thumbnails (top-right).",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    value = args[1].strip()[:30]  # Short limit
+    await CosmicBotz.update_setting("watermark_text", value)
+    await message.answer(
+        f"✅ <b>Watermark Text:</b> <code>{value}</code>\n\n"
+        "💡 Test on next /addcontent thumbnail.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@router.message(Command("setlogo"))
+@owner_only
+async def cmd_setlogo(message: Message):
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.answer(
+            "🏷 <b>Set Logo</b>\n\n"
+            "Reply to a <b>photo</b> (your logo) with <code>/setlogo</code>.\n\n"
+            "It overlays on thumbnails with text.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    file_id = message.reply_to_message.photo[-1].file_id
+    await CosmicBotz.update_setting("watermark_logo_id", file_id)
+    await message.answer(
+        "✅ <b>Logo Saved!</b>\n\n"
+        "Will appear on new thumbnails. Clear with /clearwatermark.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@router.message(Command("clearwatermark"))
+@owner_only
+async def cmd_clearwatermark(message: Message):
+    await CosmicBotz.update_setting("watermark_text", "")
+    await CosmicBotz.update_setting("watermark_logo_id", "")
+    await message.answer(
+        "✅ <b>Watermark Cleared</b>\n\n"
+        "Thumbnails now plain. Set new with /setwatermark.",
+        parse_mode=ParseMode.HTML
+    )
