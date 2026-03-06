@@ -183,7 +183,7 @@ async def cb_show_title(call: CallbackQuery, bot: Bot):
 
     # After link expires: delete bot post + user's search msg
     if sent:
-        delay = revoke_minutes * 60
+        delay = revoke_minutes
         task = asyncio.create_task(
             _delete_after(bot, chat_id, [sent.message_id, user_search_msg_id], delay)
         )
