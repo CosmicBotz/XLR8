@@ -1,9 +1,13 @@
 """
-/addcontent — TMDB wizard to add anime/movie/tvshow to the filter index.
-No channel posting. Bot saves metadata to DB and logs to LOG_CHANNEL.
+/addcontent — TMDB wizard.
+On confirm:
+  1. Resize poster to 1280x720
+  2. Post image + caption + permanent invite link to LOG_CHANNEL (stored once)
+  3. Save message_id + permanent_invite to filter index in DB
+No TMDB calls on user requests — everything reused from log channel copy.
 """
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, URLInputFile
+from aiogram.types import Message, CallbackQuery, URLInputFile, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -12,7 +16,11 @@ from database import CosmicBotz
 from middlewares.auth import admin_only
 from services.tmdb import search_tmdb, get_tv_details, get_movie_details, build_media_data
 from services.caption import build_caption
-from keyboards.inline import tmdb_results_keyboard, media_type_keyboard
+from services.image import fetch_and_resize
+from keyboards.inline import (
+    tmdb_results_keyboard, media_type_keyboard,
+    confirm_add_keyboard, watch_download_keyboard
+)
 from config import LOG_CHANNEL_ID
 import json
 
@@ -99,22 +107,29 @@ async def cb_select_tmdb(call: CallbackQuery, state: FSMContext, bot: Bot):
 
     await state.update_data(media_data=json.dumps(media_data))
 
-    # Show preview to admin
+    # Preview to admin (resized)
     caption = build_caption(media_data)
     poster  = media_data.get("poster_url")
     try:
         if poster:
-            await call.message.answer_photo(
-                URLInputFile(poster), caption=caption, parse_mode="HTML"
-            )
+            resized = await fetch_and_resize(poster)
+            if resized:
+                await call.message.answer_photo(
+                    BufferedInputFile(resized.read(), filename="poster.jpg"),
+                    caption=caption, parse_mode="HTML"
+                )
+            else:
+                await call.message.answer_photo(
+                    URLInputFile(poster), caption=caption, parse_mode="HTML"
+                )
         else:
             await call.message.answer(caption, parse_mode="HTML")
     except Exception:
         await call.message.answer(caption, parse_mode="HTML")
 
-    from keyboards.inline import confirm_add_keyboard
     await call.message.answer(
-        "✅ Confirm adding this to the index?",
+        "✅ Confirm adding to index?\n"
+        "<i>Bot will post to Log Channel with a permanent invite link.</i>",
         reply_markup=confirm_add_keyboard(),
         parse_mode="HTML"
     )
@@ -127,50 +142,91 @@ async def cb_confirm_add(call: CallbackQuery, state: FSMContext, bot: Bot):
     media_data = json.loads(data.get("media_data", "{}"))
     await state.clear()
 
-    # Save to filter index
-    filter_id = await CosmicBotz.add_filter(media_data.copy())
-    if not filter_id:
+    if not LOG_CHANNEL_ID:
         await call.message.edit_text(
-            "⚠️ This title already exists in the index!"
+            "❌ <b>LOG_CHANNEL_ID</b> is not set in config!\n"
+            "Set it in your .env and redeploy.",
+            parse_mode="HTML"
         )
         return
 
-    title = media_data.get("title", "?")
-    mtype = media_data.get("media_type", "")
+    # Save to filter index first to get filter_id
+    filter_id = await CosmicBotz.add_filter(media_data.copy())
+    if not filter_id:
+        await call.message.edit_text("⚠️ This title already exists in the index!")
+        return
+
+    title  = media_data.get("title", "?")
     letter = title[0].upper()
+    poster = media_data.get("poster_url")
 
-    await call.message.edit_text(
-        f"✅ <b>{title}</b> added to index!\n"
-        f"📂 Indexed under: <b>{letter}</b>",
-        parse_mode="HTML"
-    )
+    await call.message.edit_text("⏳ Posting to Log Channel...")
 
-    # Log to LOG_CHANNEL
-    if LOG_CHANNEL_ID:
-        type_emoji = {"anime": "🎌", "tvshow": "📺", "movie": "🎬"}.get(mtype, "🎬")
-        poster = media_data.get("poster_url")
-        log_caption = (
-            f"📥 <b>New content added</b>\n\n"
-            f"{type_emoji} <b>{title}</b>\n"
-            f"📂 Index: <b>{letter}</b>\n"
-            f"👤 Added by: <code>{call.from_user.id}</code>"
-        )
+    # ── Create permanent invite link ──────────────────────────────────────────
+    slots = await CosmicBotz.get_slots_all()
+    permanent_invite = None
+
+    if slots:
         try:
-            if poster:
-                await bot.send_photo(
+            # Permanent = no expire_date, no member_limit
+            link = await bot.create_chat_invite_link(
+                chat_id=slots[0]["channel_id"],
+                creates_join_request=False
+            )
+            permanent_invite = link.invite_link
+        except Exception as e:
+            permanent_invite = None
+
+    # ── Build caption + keyboard for log channel ──────────────────────────────
+    caption = build_caption(media_data)
+    kb      = watch_download_keyboard(permanent_invite) if permanent_invite else None
+
+    # ── Post to log channel (resized 1280x720) ────────────────────────────────
+    try:
+        if poster:
+            resized = await fetch_and_resize(poster)
+            if resized:
+                log_msg = await bot.send_photo(
                     chat_id=LOG_CHANNEL_ID,
-                    photo=URLInputFile(poster),
-                    caption=log_caption,
+                    photo=BufferedInputFile(resized.read(), filename="poster.jpg"),
+                    caption=caption,
+                    reply_markup=kb,
                     parse_mode="HTML"
                 )
             else:
-                await bot.send_message(
+                log_msg = await bot.send_photo(
                     chat_id=LOG_CHANNEL_ID,
-                    text=log_caption,
+                    photo=URLInputFile(poster),
+                    caption=caption,
+                    reply_markup=kb,
                     parse_mode="HTML"
                 )
-        except Exception as e:
-            pass  # don't break flow if log fails
+        else:
+            log_msg = await bot.send_message(
+                chat_id=LOG_CHANNEL_ID,
+                text=caption,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await call.message.edit_text(f"❌ Failed to post to Log Channel: {e}")
+        return
+
+    # ── Store log channel message info in DB ──────────────────────────────────
+    await CosmicBotz.update_filter_post(
+        filter_id=filter_id,
+        log_channel_id=LOG_CHANNEL_ID,
+        message_id=log_msg.message_id,
+        permanent_invite=permanent_invite or ""
+    )
+
+    await call.message.edit_text(
+        f"✅ <b>{title}</b> added!\n"
+        f"📂 Index: <b>{letter}</b>\n"
+        f"📋 Posted to Log Channel\n"
+        f"🔗 Permanent invite: {'✅' if permanent_invite else '❌ No slot configured'}",
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data == "cancel_add")
