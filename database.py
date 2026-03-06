@@ -1,11 +1,6 @@
 """
 database.py — Single database module for Auto Filter CosmicBotz.
 
-Usage anywhere in the bot:
-    from database import CosmicBotz
-    await CosmicBotz.connect()
-    await CosmicBotz.add_filter(data)
-    ...
 """
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -329,6 +324,11 @@ class Database:
             "groups":  await db.groups.count_documents({}),
             "verified_groups": await db.groups.count_documents({"verified": True}),
         }
+
+    async def get_slots_all(self) -> list:
+        """Get all slots — used for invite link generation."""
+        db = self.db()
+        return await db.slots.find({}).to_list(length=50)
 
 
 # ── Singleton instance ────────────────────────────────────────────────────────
