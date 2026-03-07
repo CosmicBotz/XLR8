@@ -12,46 +12,72 @@ router = Router()
 
 def _owner_text(name: str) -> str:
     return (
-        f"👋 Welcome back, <b>{name}</b>!\n\n"
+        "👋 Welcome back, <b>" + name + "</b>!\n\n"
         "🤖 <b>Auto Filter CosmicBotz</b> — Owner Panel\n\n"
-        "<b>📢 Slots:</b>\n"
-        "/addslot · /slots · /removeslot\n\n"
-        "<b>🎬 Content:</b>\n"
-        "/addcontent · /delcontent\n\n"
-        "<b>👥 Admins:</b>\n"
+
+        "📢 <b>Slots</b>\n"
+        "/addslot · /removeslot · /slots\n\n"
+
+        "🎬 <b>Content</b>\n"
+        "/addcontent · /delcontent · /filters\n\n"
+
+        "👥 <b>Admins</b>\n"
         "/addadmin · /removeadmin · /admins\n\n"
-        "<b>🌐 Groups:</b>\n"
-        "/groups · /verifygroup\n\n"
-        "<b>⚙️ Settings:</b>\n"
-        "/setrevoke · /settings · /stats\n\n"
+
+        "🌐 <b>Groups</b>\n"
+        "/groups · /verifygroup · /unverify\n\n"
+
+        "✏️ <b>Caption &amp; Thumbnail</b>\n"
+        "/setcaption · /setquality · /setaudio\n"
+        "/setwatermark · /setlogo · /clearwatermark\n\n"
+
+        "🔤 <b>Abbreviations</b>\n"
+        "/setabbr · /delabbr\n\n"
+
+        "📊 <b>Analytics</b>\n"
+        "/stats · /missed\n\n"
+
+        "⚙️ <b>Config</b>\n"
+        "/settings · /setrevoke\n\n"
+
+        "🛠 <b>System</b>\n"
         "/ping · /uptime"
     )
 
 
 def _admin_text(name: str) -> str:
     return (
-        f"👋 Hello, <b>{name}</b>!\n\n"
+        "👋 Hello, <b>" + name + "</b>!\n\n"
         "🤖 <b>Auto Filter CosmicBotz</b> — Admin Panel\n\n"
-        "/addcontent · /slots · /stats\n\n"
-        "Send a letter (A–Z) to browse the index."
+
+        "🎬 <b>Content</b>\n"
+        "/addcontent · /delcontent · /filters\n\n"
+
+        "📊 <b>Analytics</b>\n"
+        "/stats · /missed\n\n"
+
+        "🛠 <b>System</b>\n"
+        "/ping · /uptime\n\n"
+
+        "Send a letter <b>(A–Z)</b> to browse the index."
     )
 
 
 def _user_text(name: str) -> str:
     return (
-        f"👋 Hello, <b>{name}</b>!\n\n"
+        "👋 Hello, <b>" + name + "</b>!\n\n"
         "🤖 <b>Auto Filter CosmicBotz</b>\n\n"
-        "Send a <b>single letter</b> to browse the index.\n"
-        "Example: send <code>N</code> → Naruto, Noir…\n\n"
-        "Or type a <b>title</b> to search directly."
+        "Join our group to browse and get content.\n\n"
+        "/help — how to use the bot"
     )
 
 
 def _group_verified_text() -> str:
     return (
-        "🤖 <b>Auto Filter CosmicBotz</b> is active here!\n\n"
-        "Send a <b>letter</b> (A–Z) to browse the index.\n"
-        "Or type a <b>title</b> to search."
+        "🤖 <b>Auto Filter CosmicBotz</b> is active!\n\n"
+        "📂 Send a <b>letter</b> (A–Z) to browse the index.\n"
+        "🔍 Or type a <b>title</b> to search directly.\n\n"
+        "/help — usage guide"
     )
 
 
@@ -64,23 +90,13 @@ def _group_unverified_text() -> str:
 
 
 async def _send_start(message: Message, text: str):
-    """
-    Try to send a random image from START_PICS with caption.
-    Falls back to plain text if list is empty or sending fails.
-    """
     if START_PICS:
         photo = random.choice(START_PICS)
         try:
-            await message.answer_photo(
-                photo=photo,
-                caption=text,
-                parse_mode="HTML"
-            )
+            await message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
             return
         except Exception:
-            pass  # fall through to text fallback
-
-    # Fallback — plain text
+            pass
     await message.answer(text, parse_mode="HTML")
 
 
@@ -113,16 +129,41 @@ async def cmd_start(
 # ── /help ─────────────────────────────────────────────────────────────────────
 
 @router.message(Command("help"))
-async def cmd_help(message: Message, **kwargs):
-    await message.answer(
-        "📖 <b>How to use:</b>\n\n"
-        "• Send a <b>letter</b> (A–Z) to see all indexed titles.\n"
-        "• Send a <b>title name</b> to search.\n"
-        "• Tap any result → goes to the channel post.\n"
-        "• <b>Watch/Download</b> link auto-expires after set time.\n\n"
-        "For admin commands, contact the bot owner.",
-        parse_mode="HTML"
-    )
+async def cmd_help(message: Message, is_owner: bool = False, is_admin: bool = False, **kwargs):
+    is_private    = message.chat.type == ChatType.PRIVATE
+    is_privileged = is_owner or is_admin
+
+    if is_private and is_privileged:
+        await message.answer(
+            "📖 <b>Admin Usage</b>\n\n"
+            "<b>Adding content:</b>\n"
+            "1. /addslot — register a channel (bot must be admin there)\n"
+            "2. /addcontent — search TMDB, pick slot, post\n\n"
+            "<b>Managing content:</b>\n"
+            "/filters — list all indexed titles with status\n"
+            "/delcontent TITLE — remove a title\n"
+            "/missed — top searches with no results\n\n"
+            "<b>Groups:</b>\n"
+            "/groups — list all groups\n"
+            "/verifygroup ID — verify a group from DM\n"
+            "/verify — verify current group (use inside group)\n\n"
+            "<b>Settings:</b>\n"
+            "/settings — full config panel with inline buttons\n"
+            "/setrevoke MINUTES — auto-delete timer\n"
+            "/setcaption — view/edit post templates\n\n"
+            "<b>Filters work in your DM too</b> — send any letter or title.",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            "📖 <b>How to use:</b>\n\n"
+            "• Send a <b>letter</b> (A–Z) → browse all titles under that letter\n"
+            "• Send a <b>title name</b> → search directly\n"
+            "• Tap a result → get the Watch/Download link\n"
+            "• Link auto-expires after a set time\n\n"
+            "Works only inside verified groups.",
+            parse_mode="HTML"
+        )
 
 
 # ── /stats ────────────────────────────────────────────────────────────────────
@@ -130,18 +171,33 @@ async def cmd_help(message: Message, **kwargs):
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, **kwargs):
     s = await CosmicBotz.get_stats()
+    a = await CosmicBotz.get_analytics()
+
+    top_q   = ("<code>" + a["top_today"] + "</code>") if a["top_today"] else "—"
+    top_grp = (
+        "<code>" + str(a["top_group_id"]) + "</code>"
+        " (" + str(a["top_group_cnt"]) + " searches)"
+    ) if a["top_group_id"] else "—"
+
     await message.answer(
         "📊 <b>Bot Statistics</b>\n\n"
-        f"📂 Total Index: <b>{s['total']}</b>\n"
-        f"🎌 Anime: <b>{s['anime']}</b>\n"
-        f"📺 TV Shows: <b>{s['tvshow']}</b>\n"
-        f"🎬 Movies: <b>{s['movie']}</b>\n\n"
-        f"📢 Channel Slots: <b>{s['slots']}</b>\n"
-        f"🌐 Groups: <b>{s['groups']}</b> total, "
-        f"<b>{s['verified_groups']}</b> verified",
+        "📂 <b>Content Index</b>\n"
+        "  🎌 Anime: <b>" + str(s["anime"]) + "</b>\n"
+        "  📺 TV Shows: <b>" + str(s["tvshow"]) + "</b>\n"
+        "  🎬 Movies: <b>" + str(s["movie"]) + "</b>\n"
+        "  📦 Total: <b>" + str(s["total"]) + "</b>\n\n"
+        "🌐 <b>Infrastructure</b>\n"
+        "  Groups: <b>" + str(s["groups"]) + "</b>  |  Verified: <b>" + str(s["verified_groups"]) + "</b>\n"
+        "  Slots: <b>" + str(s["slots"]) + "</b>\n\n"
+        "🔍 <b>Search Today</b>\n"
+        "  Total: <b>" + str(a["today_searches"]) + "</b>"
+        "  |  Found: <b>" + str(a["today_found"]) + "</b>"
+        "  |  Missed: <b>" + str(a["today_missed"]) + "</b>\n"
+        "  🔥 Top query: " + top_q + "\n"
+        "  🏆 Most active group: " + top_grp + "\n\n"
+        "📈 All-time searches: <b>" + str(a["total_searches"]) + "</b>",
         parse_mode="HTML"
     )
-
 
 
 # ── /ping ─────────────────────────────────────────────────────────────────────
