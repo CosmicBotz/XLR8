@@ -120,3 +120,30 @@ def quick_add_slot_keyboard(channel_id: int, channel_name: str) -> InlineKeyboar
             callback_data="qslot_ignore"
         )
     ]])
+
+
+def settings_keyboard(current_revoke: int = 30) -> InlineKeyboardMarkup:
+    """Inline keyboard for /settings panel."""
+    def revoke_btn(minutes: int) -> InlineKeyboardButton:
+        label = ("✅ " if minutes == current_revoke else "") + str(minutes) + "m"
+        return InlineKeyboardButton(text=label, callback_data="set_revoke_" + str(minutes))
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📢 Slots",        callback_data="settings_slots"),
+            InlineKeyboardButton(text="👥 Admins",       callback_data="settings_admins"),
+        ],
+        [
+            InlineKeyboardButton(text="✏️ Caption",      callback_data="settings_caption"),
+            InlineKeyboardButton(text="🖼 Watermark",    callback_data="settings_watermark"),
+        ],
+        [
+            InlineKeyboardButton(text="⏱ Revoke:", callback_data="settings_refresh"),
+            revoke_btn(15),
+            revoke_btn(30),
+            revoke_btn(60),
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Refresh",      callback_data="settings_refresh"),
+        ]
+    ])
