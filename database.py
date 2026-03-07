@@ -1,11 +1,6 @@
 """
 database.py — Single database module for Auto Filter CosmicBotz.
 
-Usage anywhere in the bot:
-    from database import CosmicBotz
-    await CosmicBotz.connect()
-    await CosmicBotz.add_filter(data)
-    ...
 """
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -193,9 +188,10 @@ class Database:
         filter_id: str,
         log_channel_id: int,
         message_id: int,
-        permanent_invite: str
+        permanent_invite: str,
+        slot_channel_id: int = 0,
     ):
-        """Store log channel post location + permanent invite link after /addcontent."""
+        """Store log channel post location + permanent invite link + slot channel after /addcontent."""
         db = self.db()
         await db.filters.update_one(
             {"_id": ObjectId(filter_id)},
@@ -203,6 +199,7 @@ class Database:
                 "log_channel_id":   log_channel_id,
                 "message_id":       message_id,
                 "permanent_invite": permanent_invite,
+                "slot_channel_id":  slot_channel_id,
                 "posted":           True
             }}
         )
