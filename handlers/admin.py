@@ -401,3 +401,53 @@ async def cmd_clearwatermark(message: Message, **kwargs):
     await _db.update_setting("watermark_text", "")
     await _db.update_setting("watermark_logo_id", "")
     await message.answer("✅ Watermark cleared.", parse_mode="HTML")
+
+
+# ── Abbreviation commands ─────────────────────────────────────────────────────
+
+@router.message(Command("setabbr"))
+@admin_only
+async def cmd_setabbr(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or "=" not in args[1]:
+        abbr_map = await _db.get_abbr_map()
+        if abbr_map:
+            lines = "\n".join(f"<code>{k}</code> → {v}" for k, v in sorted(abbr_map.items()))
+        else:
+            lines = "<i>No abbreviations set yet.</i>"
+        await message.answer(
+            "🔤 <b>Abbreviations</b>\n\n"
+            f"{lines}\n\n"
+            "To add: <code>/setabbr AOT=Attack on Titan</code>\n"
+            "To remove: <code>/delabbr AOT</code>",
+            parse_mode="HTML"
+        )
+        return
+    abbr, full = args[1].split("=", 1)
+    abbr = abbr.strip()
+    full = full.strip()
+    if not abbr or not full:
+        await message.answer("⚠️ Usage: <code>/setabbr AOT=Attack on Titan</code>", parse_mode="HTML")
+        return
+    await _db.set_abbr(abbr, full)
+    await message.answer(
+        f"✅ <code>{abbr.upper()}</code> → <b>{full}</b>",
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("delabbr"))
+@admin_only
+async def cmd_delabbr(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Usage: <code>/delabbr AOT</code>", parse_mode="HTML")
+        return
+    abbr = args[1].strip()
+    ok   = await _db.del_abbr(abbr)
+    if ok:
+        await message.answer(f"✅ Removed abbreviation: <code>{abbr.upper()}</code>", parse_mode="HTML")
+    else:
+        await message.answer(f"⚠️ <code>{abbr.upper()}</code> not found.", parse_mode="HTML")
