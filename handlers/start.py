@@ -17,13 +17,15 @@ def _owner_text(name: str) -> str:
         "<b>📢 Slots:</b>\n"
         "/addslot · /slots · /removeslot\n\n"
         "<b>🎬 Content:</b>\n"
-        "/addcontent\n\n"
+        "/addcontent · /delcontent\n\n"
         "<b>👥 Admins:</b>\n"
         "/addadmin · /removeadmin · /admins\n\n"
         "<b>🌐 Groups:</b>\n"
         "/groups · /verifygroup\n\n"
         "<b>⚙️ Settings:</b>\n"
-        "/setrevoke · /settings · /stats"
+        "/setrevoke · /settings · /stats"\n\n"
+        "/ping · /uptime"
+        
     )
 
 
@@ -138,5 +140,44 @@ async def cmd_stats(message: Message, **kwargs):
         f"📢 Channel Slots: <b>{s['slots']}</b>\n"
         f"🌐 Groups: <b>{s['groups']}</b> total, "
         f"<b>{s['verified_groups']}</b> verified",
+        parse_mode="HTML"
+    )
+
+
+
+# ── /ping ─────────────────────────────────────────────────────────────────────
+
+@router.message(Command("ping"))
+async def cmd_ping(message: Message, **kwargs):
+    import time
+    t    = time.monotonic()
+    sent = await message.answer("🏓 Pong!")
+    ms   = round((time.monotonic() - t) * 1000)
+    await sent.edit_text(
+        "<b>🏓 Pong!</b>  <code>" + str(ms) + "ms</code>",
+        parse_mode="HTML"
+    )
+
+
+# ── /uptime ───────────────────────────────────────────────────────────────────
+
+@router.message(Command("uptime"))
+async def cmd_uptime(message: Message, **kwargs):
+    from bot import START_TIME
+    from datetime import datetime
+    delta   = datetime.utcnow() - START_TIME
+    days    = delta.days
+    hours   = delta.seconds // 3600
+    minutes = (delta.seconds % 3600) // 60
+    seconds = delta.seconds % 60
+
+    parts = []
+    if days:    parts.append("<b>" + str(days) + "d</b>")
+    if hours:   parts.append("<b>" + str(hours) + "h</b>")
+    if minutes: parts.append("<b>" + str(minutes) + "m</b>")
+    parts.append("<b>" + str(seconds) + "s</b>")
+
+    await message.answer(
+        "🟢 <b>Bot Uptime</b>\n\n⏱ " + " ".join(parts),
         parse_mode="HTML"
     )
