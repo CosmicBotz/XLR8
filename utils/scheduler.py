@@ -1,7 +1,6 @@
 """
 Scheduler — simple in-memory task manager.
 Keeps strong references so GC never cancels pending deletions.
-No DB, no APScheduler — just asyncio done right.
 """
 import asyncio
 import logging
@@ -13,16 +12,19 @@ class TaskManager:
     def __init__(self):
         self._tasks: set[asyncio.Task] = set()
 
-    def schedule(self, coro, delay: int):
-        """Schedule a coroutine to run after `delay` seconds."""
+    async def schedule(self, coro, delay: int):
+        """Schedule a coroutine to run after delay seconds."""
         async def _runner():
             await asyncio.sleep(delay)
-            await coro
+            try:
+                await coro
+            except Exception as e:
+                logger.debug(f"Scheduled task error: {e}")
 
         task = asyncio.create_task(_runner())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        logger.debug(f"Scheduled task in {delay}s — {len(self._tasks)} pending")
+        logger.debug(f"Scheduled in {delay}s — {len(self._tasks)} pending")
 
     def cancel_all(self):
         for task in list(self._tasks):
@@ -30,12 +32,10 @@ class TaskManager:
         self._tasks.clear()
 
 
-# Global singleton
 task_manager = TaskManager()
 
 
 def setup_scheduler():
-    # Nothing to start — asyncio event loop handles everything
     logger.info("✅ Task manager ready.")
 
 
