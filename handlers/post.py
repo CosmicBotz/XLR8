@@ -256,7 +256,8 @@ async def cb_confirm_add(call: CallbackQuery, state: FSMContext, bot: Bot):
         filter_id=filter_id,
         log_channel_id=LOG_CHANNEL_ID,
         message_id=log_msg.message_id,
-        permanent_invite=permanent_invite or ""
+        permanent_invite=permanent_invite or "",
+        slot_channel_id=selected_slot or 0,
     )
 
     await call.message.edit_text(
