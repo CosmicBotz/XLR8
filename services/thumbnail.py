@@ -228,13 +228,24 @@ def _build_card(
     left_x = 58
     text_w = int(W * 0.46)
 
-    # Title — large bold white
-    tf     = _font(72)
-    tlines = _wrap(title, tf, draw, text_w)[:3]
-    y      = 170
+    # Title — auto-scale font so it always fits in 2 lines max
+    def _best_font_size(title: str, max_w: int, draw) -> tuple:
+        """Return (font, lines, line_height) that fits title in ≤2 lines."""
+        for size in (72, 60, 50, 42, 34):
+            f      = _font(size, bold=True)
+            lines  = _wrap(title, f, draw, max_w)
+            lh     = int(size * 1.18)
+            if len(lines) <= 2:
+                return f, lines[:2], lh
+        # Last resort — 34px, allow 3 lines
+        f = _font(34, bold=True)
+        return f, _wrap(title, f, draw, max_w)[:3], int(34 * 1.18)
+
+    tf, tlines, line_h = _best_font_size(title, text_w, draw)
+    y = 170
     for ln in tlines:
         draw.text((left_x, y), ln, font=tf, fill=(255, 255, 255, 255))
-        y += 84
+        y += line_h
     y += 18
 
     # Description
