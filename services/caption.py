@@ -1,14 +1,8 @@
 """
-caption.py — Build post captions.
-Quality and Audio are pulled from DB settings (set via /setquality & /setaudio).
-Falls back to defaults if not set.
+caption.py — Build post captions from a customizable template.
+Template variables: {title} {type} {year} {status} {episodes} {season} {quality} {audio} {genres} {runtime}
+Template stored in DB settings via /setcaption.
 """
-
-MEDIA_EMOJI = {
-    "anime":  "🎌",
-    "tvshow": "📺",
-    "movie":  "🎬"
-}
 
 MEDIA_TYPE_LABEL = {
     "anime":  "Anime Series",
@@ -16,65 +10,99 @@ MEDIA_TYPE_LABEL = {
     "movie":  "Movie"
 }
 
-DEFAULT_QUALITY = "1080p FHD | 720p HD | 480p WEB-DL"
-DEFAULT_AUDIO   = "हिंदी (Hindi)"
+DEFAULT_QUALITY  = "1080p FHD | 720p HD | 480p WEB-DL"
+DEFAULT_AUDIO    = "हिंदी (Hindi)"
+
+# Default templates — admin can override via /setcaption
+DEFAULT_TEMPLATE_SERIES = (
+    "<b>{title}</b>\n"
+    "<blockquote>"
+    "▶ <b>Type :</b> {type}\n"
+    "▶ <b>Status :</b> {status}\n"
+    "▶ <b>No of Episodes :</b> {episodes}\n"
+    "▶ <b>Season :</b> {season}\n"
+    "▶ <b>Quality :</b> {quality}\n"
+    "▶ <b>Audio :</b> {audio}\n"
+    "<b>Genre :</b> {genres}"
+    "</blockquote>"
+)
+
+DEFAULT_TEMPLATE_MOVIE = (
+    "<b>{title}</b>\n"
+    "<blockquote>"
+    "▶ <b>Type :</b> {type}\n"
+    "▶ <b>Runtime :</b> {runtime} min\n"
+    "▶ <b>Quality :</b> {quality}\n"
+    "▶ <b>Audio :</b> {audio}\n"
+    "<b>Genre :</b> {genres}"
+    "</blockquote>"
+)
+
+# All available variables with descriptions — shown in /setcaption
+CAPTION_VARIABLES = {
+    "{title}":    "Anime/Show/Movie title",
+    "{type}":     "Media type + year e.g. Anime Series (2019)",
+    "{year}":     "Release year",
+    "{status}":   "Airing status",
+    "{episodes}": "Total episodes",
+    "{season}":   "Number of seasons",
+    "{quality}":  "Quality (set via /setquality)",
+    "{audio}":    "Audio language (set via /setaudio)",
+    "{genres}":   "Genres",
+    "{runtime}":  "Runtime in minutes (movies)",
+    "{overview}": "TMDB plot overview",
+}
 
 
-async def get_caption_defaults() -> tuple[str, str]:
-    """Fetch quality & audio from DB settings."""
+async def _get_settings() -> dict:
     try:
         from database import CosmicBotz
-        settings = await CosmicBotz.get_settings()
-        quality  = settings.get("caption_quality", DEFAULT_QUALITY)
-        audio    = settings.get("caption_audio",   DEFAULT_AUDIO)
-        return quality, audio
+        return await CosmicBotz.get_settings()
     except Exception:
-        return DEFAULT_QUALITY, DEFAULT_AUDIO
+        return {}
 
 
 async def build_caption(media_data: dict) -> str:
-    """Async caption builder — reads quality/audio from DB settings."""
-    quality, audio = await get_caption_defaults()
+    settings = await _get_settings()
+    quality  = media_data.get("quality") or settings.get("caption_quality", DEFAULT_QUALITY)
+    audio    = media_data.get("audio")   or settings.get("caption_audio",   DEFAULT_AUDIO)
 
-    # Allow per-item override (stored at /addcontent time if needed)
-    quality = media_data.get("quality") or quality
-    audio   = media_data.get("audio")   or audio
-
-    mtype  = media_data.get("media_type", "anime")
-    title  = media_data.get("title", "Unknown")
-    genres = media_data.get("genres", "N/A")
-    label  = MEDIA_TYPE_LABEL.get(mtype, "Series")
-
-    lines = [f"<b>{title}</b>"]
-    lines.append("<blockquote>")
+    mtype    = media_data.get("media_type", "anime")
+    title    = media_data.get("title", "Unknown")
+    genres   = media_data.get("genres", "N/A")
+    overview = media_data.get("overview", "")
+    label    = MEDIA_TYPE_LABEL.get(mtype, "Series")
 
     if mtype in ("anime", "tvshow"):
         year     = (media_data.get("first_air_date") or media_data.get("release_date") or "")[:4]
-        episodes = media_data.get("episodes", "N/A")
-        season   = media_data.get("seasons", 1)
+        episodes = str(media_data.get("episodes", "N/A"))
+        season   = str(media_data.get("seasons", 1))
         status   = media_data.get("status", "N/A")
-        lines += [
-            f"➣ <b>Type :</b> {label}{f' ({year})' if year else ''}",
-            f"➣ <b>Status :</b> {status}",
-            f"➣ <b>No of Episodes :</b> {episodes}",
-            f"➣ <b>Season :</b> {season}",
-            f"➣ <b>Quality :</b> {quality}",
-            f"➣ <b>Audio :</b> {audio}",
-            f"<b>Genre :</b> {genres}",
-        ]
-    elif mtype == "movie":
-        year    = (media_data.get("release_date") or "")[:4]
-        runtime = media_data.get("runtime", "N/A")
-        lines += [
-            f"➣ <b>Type :</b> {label}{f' ({year})' if year else ''}",
-            f"➣ <b>Runtime :</b> {runtime} min",
-            f"➣ <b>Quality :</b> {quality}",
-            f"➣ <b>Audio :</b> {audio}",
-            f"<b>Genre :</b> {genres}",
-        ]
+        type_str = f"{label} ({year})" if year else label
+        runtime  = "N/A"
+        template = settings.get("caption_template_series", DEFAULT_TEMPLATE_SERIES)
+    else:
+        year     = (media_data.get("release_date") or "")[:4]
+        episodes = "N/A"
+        season   = "N/A"
+        status   = "N/A"
+        runtime  = str(media_data.get("runtime", "N/A"))
+        type_str = f"{label} ({year})" if year else label
+        template = settings.get("caption_template_movie", DEFAULT_TEMPLATE_MOVIE)
 
-    lines.append("</blockquote>")
-    return "\n".join(lines)
+    return template.format(
+        title    = title,
+        type     = type_str,
+        year     = year,
+        status   = status,
+        episodes = episodes,
+        season   = season,
+        quality  = quality,
+        audio    = audio,
+        genres   = genres,
+        runtime  = runtime,
+        overview = overview,
+    )
 
 
 def build_index_caption(letter: str, results: list) -> str:
