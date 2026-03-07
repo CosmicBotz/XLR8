@@ -1,16 +1,77 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, ChatMemberUpdated
-from aiogram.filters import Command, ChatMemberUpdatedFilter, JOIN_TRANSITION
+from aiogram.filters import Command, ChatMemberUpdatedFilter, JOIN_TRANSITION, LEAVE_TRANSITION
 from aiogram.enums import ChatType
 
 from database import CosmicBotz
 from middlewares.auth import owner_only, admin_only
+from keyboards.inline import quick_add_slot_keyboard
 from config import OWNER_ID
 import logging
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+
+
+# ── Bot promoted to admin in a CHANNEL ───────────────────────────────────────
+
+@router.my_chat_member()
+async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
+    """Fires when bot's status changes in any chat."""
+    chat     = event.chat
+    new_stat = event.new_chat_member.status
+    old_stat = event.old_chat_member.status
+
+    # Only care about channel promotions
+    if chat.type != ChatType.CHANNEL:
+        return
+    if new_stat != "administrator":
+        return
+    if old_stat == "administrator":
+        return  # already was admin, ignore
+
+    logger.info(f"Bot promoted to admin in channel: {chat.title} ({chat.id})")
+
+    # Notify owner
+    try:
+        await bot.send_message(
+            chat_id=OWNER_ID,
+            text=(
+                "📡 <b>Bot added as admin in a channel!</b>\n\n"
+                "🏷 Channel: <b>" + (chat.title or "Unknown") + "</b>\n"
+                "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
+                "Do you want to add this channel as a content slot?"
+            ),
+            reply_markup=quick_add_slot_keyboard(chat.id, chat.title or "Unknown"),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.warning(f"Could not notify owner about channel admin: {e}")
+
+    # Notify all admins
+    try:
+        admins = await CosmicBotz.get_admins()
+        for admin_id in admins:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        "📡 <b>Bot added as admin in a channel!</b>\n\n"
+                        "🏷 Channel: <b>" + (chat.title or "Unknown") + "</b>\n"
+                        "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
+                        "Do you want to add this channel as a content slot?"
+                    ),
+                    reply_markup=quick_add_slot_keyboard(chat.id, chat.title or "Unknown"),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+# ── Callback: quick add slot ──────────────────────────────────────────────────
 
 # ── Bot added to group ────────────────────────────────────────────────────────
 
@@ -65,13 +126,25 @@ async def bot_left_group(event: ChatMemberUpdated):
 # ── /verify (inside group) ────────────────────────────────────────────────────
 
 @router.message(Command("verify"), F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
-async def cmd_verify_group(message: Message, is_admin: bool = False, **kwargs):
+async def cmd_verify_group(message: Message, bot: Bot, is_admin: bool = False, **kwargs):
     if not is_admin:
         await message.answer("⛔ Only the bot owner or admins can verify groups.")
         return
 
     await CosmicBotz.add_group(message.chat.id, message.chat.title, message.from_user.id)
-    ok = await CosmicBotz.verify_group(message.chat.id, message.from_user.id)
+
+    # Generate permanent invite link for the group
+    invite_link = ""
+    try:
+        link = await bot.create_chat_invite_link(
+            chat_id=message.chat.id,
+            creates_join_request=False
+        )
+        invite_link = link.invite_link
+    except Exception:
+        pass
+
+    ok = await CosmicBotz.verify_group(message.chat.id, message.from_user.id, invite_link)
 
     if ok:
         await message.answer(
@@ -156,3 +229,41 @@ async def cmd_list_groups(message: Message, **kwargs):
             )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("qslot_"))
+async def cb_quick_slot(call: CallbackQuery, bot: Bot, is_owner: bool = False, is_admin: bool = False, **kwargs):
+    await call.answer()
+
+    if not (is_owner or is_admin):
+        await call.answer("⛔ Not allowed.", show_alert=True)
+        return
+
+    if call.data == "qslot_ignore":
+        await call.message.edit_text("❌ Channel ignored.")
+        return
+
+    # qslot_add|channel_id|channel_name
+    parts = call.data.split("|", 2)
+    if len(parts) < 3:
+        await call.message.edit_text("⚠️ Invalid data.")
+        return
+
+    channel_id   = int(parts[1])
+    channel_name = parts[2]
+
+    ok, msg = await CosmicBotz.add_slot(
+        owner_id=call.from_user.id,
+        channel_id=channel_id,
+        channel_name=channel_name,
+        slot_name=channel_name
+    )
+
+    if ok:
+        await call.message.edit_text(
+            "✅ <b>" + channel_name + "</b> added as a slot!\n\n"
+            "Use /addcontent to post content to this slot.",
+            parse_mode="HTML"
+        )
+    else:
+        await call.message.edit_text("⚠️ " + msg)
