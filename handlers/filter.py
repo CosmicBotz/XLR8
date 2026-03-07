@@ -62,14 +62,13 @@ async def handle_text(
 
     is_private = message.chat.type == ChatType.PRIVATE
 
-    # ── DM → show join group buttons, never content ───────────────────────────
+    # ── DM → show join group buttons (only for regular users, not admin/owner) ──
     if is_private:
-        if len(text) == 1 and text.upper() in ALPHABET:
-            await _send_join_groups(message)
-        elif len(text) >= 2:
-            # Only respond if it looks like an anime/show request — 2+ words or known pattern
-            # Silent on short casual text to avoid spam
-            if len(text) >= 3:
+        is_privileged = kwargs.get("is_admin", False) or kwargs.get("is_owner", False)
+        if not is_privileged:
+            if len(text) == 1 and text.upper() in ALPHABET:
+                await _send_join_groups(message)
+            elif len(text) >= 3:
                 await _send_join_groups(message)
         return
 
