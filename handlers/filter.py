@@ -5,7 +5,6 @@ GROUP only for content delivery.
 DM: show join group buttons, no content.
 Silent on no results — never send "not found" noise.
 """
-from datetime import datetime, timedelta, timezone
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatType
@@ -13,6 +12,7 @@ from aiogram.enums import ChatType
 from database import CosmicBotz
 from services.caption import build_index_caption
 from keyboards.inline import index_results_keyboard, watch_download_keyboard, join_groups_keyboard
+from utils.scheduler import task_manager
 
 router   = Router()
 ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -20,14 +20,6 @@ ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 # Keep strong references to tasks so GC doesn't cancel them before they fire
 _pending_tasks: set = set()
 
-
-async def _delete_after(bot: Bot, chat_id: int, message_ids: list, delay: int):
-    await asyncio.sleep(delay)
-    for mid in message_ids:
-        try:
-            await bot.delete_message(chat_id, mid)
-        except Exception:
-            pass
 
 
 async def _send_join_groups(message: Message):
@@ -186,15 +178,9 @@ async def cb_show_title(call: CallbackQuery, bot: Bot):
     # After link expires: delete bot post + user's search msg
     if sent:
         delay = revoke_minutes * 60
-        from utils.scheduler import scheduler
-        from config import BOT_TOKEN
-        run_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
-        scheduler.add_job(
-            _delete_messages,
-            trigger="date",
-            run_date=run_at,
-            args=[chat_id, [sent.message_id, user_search_msg_id], BOT_TOKEN],
-            misfire_grace_time=120
+        task_manager.schedule(
+            _delete_messages(bot, chat_id, [sent.message_id, user_search_msg_id]),
+            delay=delay
         )
 
 
