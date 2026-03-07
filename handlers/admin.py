@@ -195,38 +195,123 @@ async def cmd_setrevoke(message: Message, **kwargs):
     await message.answer(f"✅ Auto-revoke set to <b>{minutes} minutes</b>.", parse_mode="HTML")
 
 
+# ── Settings helpers ──────────────────────────────────────────────────────────
+
+async def _settings_text_and_kb():
+    from keyboards.inline import settings_keyboard
+    settings = await CosmicBotz.get_settings()
+    admins   = await CosmicBotz.get_admins()
+    slots    = await CosmicBotz.get_slots_all()
+
+    revoke   = settings.get("auto_revoke_minutes", 30)
+    quality  = settings.get("caption_quality",     "1080p FHD | 720p HD | 480p WEB-DL")
+    audio    = settings.get("caption_audio",        "हिंदी (Hindi)")
+    wm_text  = settings.get("watermark_text",       "")
+    wm_logo  = settings.get("watermark_logo_id",    "")
+
+    text = (
+        "⚙️ <b>Bot Settings</b>\n\n"
+        "⏱ <b>Auto-Revoke:</b> <code>" + str(revoke) + " min</code>\n"
+        "📢 <b>Slots:</b> <code>" + str(len(slots)) + "</code>\n"
+        "👥 <b>Admins:</b> <code>" + str(len(admins)) + "</code>\n\n"
+        "✏️ <b>Caption</b>\n"
+        "  Quality: <code>" + quality + "</code>\n"
+        "  Audio:   <code>" + audio + "</code>\n\n"
+        "🖼 <b>Watermark</b>\n"
+        "  Text: <code>" + (wm_text or "—") + "</code>\n"
+        "  Logo: " + ("✅ Set" if wm_logo else "—") + "\n"
+    )
+    kb = settings_keyboard(revoke)
+    return text, kb
+
+
 # ── /settings ─────────────────────────────────────────────────────────────────
 
 @router.message(Command("settings"))
 @owner_only
 async def cmd_settings(message: Message, **kwargs):
-    settings = await CosmicBotz.get_settings()
-    admins   = await CosmicBotz.get_admins()
-    slots    = await CosmicBotz.get_slots(message.from_user.id)
-    revoke   = settings.get("auto_revoke_minutes", 30)
+    text, kb = await _settings_text_and_kb()
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-    settings = await CosmicBotz.get_settings()
-    quality  = settings.get("caption_quality", "1080p FHD | 720p HD | 480p WEB-DL")
-    audio    = settings.get("caption_audio",   "हिंदी (Hindi)")
 
-    wm_text = settings.get("watermark_text", "—")
-    wm_logo = settings.get("watermark_logo_id", "")
+@router.callback_query(F.data == "settings_refresh")
+async def cb_settings_refresh(call: CallbackQuery, is_owner: bool = False, **kwargs):
+    if not is_owner:
+        await call.answer("⛔ Owner only.", show_alert=True)
+        return
+    await call.answer("Refreshed ✅")
+    text, kb = await _settings_text_and_kb()
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
-    await message.answer(
-        "⚙️ <b>Bot Settings</b>\n\n"
-        f"🔗 Auto-Revoke: <b>{revoke} min</b> — /setrevoke\n"
-        f"👥 Admins: <b>{len(admins)}</b> — /admins\n"
-        f"📢 Slots: <b>{len(slots)}</b> — /slots\n\n"
-        "✏️ <b>Caption</b>\n"
-        f"🎬 Quality: <code>{quality}</code>\n"
-        f"🔊 Audio: <code>{audio}</code>\n"
-        "/setquality · /setaudio · /setcaption\n\n"
-        "🖼 <b>Thumbnail Watermark</b>\n"
-        f"📝 Text: <code>{wm_text or '—'}</code>\n"
-        f"🏷 Logo: {'✅ Set' if wm_logo else '—'}\n"
-        "/setwatermark · /setlogo · /clearwatermark\n\n"
-        "🗑 /delcontent — remove title from index\n"
-        "/addslot · /addcontent · /addadmin · /groups",
+
+@router.callback_query(F.data.startswith("set_revoke_"))
+async def cb_set_revoke(call: CallbackQuery, is_owner: bool = False, **kwargs):
+    if not is_owner:
+        await call.answer("⛔ Owner only.", show_alert=True)
+        return
+    minutes = int(call.data.split("_")[-1])
+    await CosmicBotz.update_setting("auto_revoke_minutes", minutes)
+    await call.answer("✅ Auto-revoke set to " + str(minutes) + " min")
+    text, kb = await _settings_text_and_kb()
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "settings_slots")
+async def cb_settings_slots(call: CallbackQuery, is_owner: bool = False, **kwargs):
+    if not is_owner:
+        await call.answer()
+        return
+    slots = await CosmicBotz.get_slots_all()
+    if not slots:
+        await call.answer("No slots added yet.", show_alert=True)
+        return
+    lines = ["📢 <b>Slots</b>\n"]
+    for s in slots:
+        lines.append("• <b>" + s["slot_name"] + "</b> — <code>" + str(s["channel_id"]) + "</code>")
+    await call.answer()
+    await call.message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "settings_admins")
+async def cb_settings_admins(call: CallbackQuery, is_owner: bool = False, **kwargs):
+    if not is_owner:
+        await call.answer()
+        return
+    admins = await CosmicBotz.get_admins()
+    if not admins:
+        await call.answer("No admins added yet.", show_alert=True)
+        return
+    lines = ["👥 <b>Admins</b>\n"] + ["• <code>" + str(a) + "</code>" for a in admins]
+    await call.answer()
+    await call.message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "settings_caption")
+async def cb_settings_caption(call: CallbackQuery, is_owner: bool = False, **kwargs):
+    if not is_owner:
+        await call.answer()
+        return
+    await call.answer()
+    await call.message.answer(
+        "✏️ <b>Caption Commands</b>\n\n"
+        "/setquality — set quality line\n"
+        "/setaudio — set audio line\n"
+        "/setcaption — view/edit full templates",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "settings_watermark")
+async def cb_settings_watermark(call: CallbackQuery, is_owner: bool = False, **kwargs):
+    if not is_owner:
+        await call.answer()
+        return
+    await call.answer()
+    await call.message.answer(
+        "🖼 <b>Watermark Commands</b>\n\n"
+        "/setwatermark TEXT — set watermark text\n"
+        "/setlogo — reply to a photo to set logo\n"
+        "/clearwatermark — remove watermark",
         parse_mode="HTML"
     )
 
@@ -564,3 +649,28 @@ async def cmd_filters(message: Message, **kwargs):
             "<pre>" + full_text + "</pre>",
             parse_mode="HTML"
         )
+
+
+# ── /missed ───────────────────────────────────────────────────────────────────
+
+@router.message(Command("missed"))
+@owner_only
+async def cmd_missed(message: Message, **kwargs):
+    results = await CosmicBotz.get_missed_searches(limit=15)
+    if not results:
+        await message.answer("✅ No missed searches yet — everything found!")
+        return
+
+    lines = ["🔍 <b>Top Missed Searches</b>\n"]
+    for i, r in enumerate(results, 1):
+        q      = r.get("query", "?")
+        count  = r.get("count", 1)
+        groups = len(r.get("groups", []))
+        lines.append(
+            str(i) + ". <code>" + q + "</code>"
+            " — <b>" + str(count) + "x</b>"
+            " in <b>" + str(groups) + "</b> group(s)"
+        )
+
+    lines.append("\n<i>Add content with /addcontent to clear these.</i>")
+    await message.answer("\n".join(lines), parse_mode="HTML")
