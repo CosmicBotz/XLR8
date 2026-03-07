@@ -62,7 +62,9 @@ async def _send_post(
             chat_id=chat_id,
             from_chat_id=item["log_channel_id"],
             message_id=item["message_id"],
-            reply_markup=kb
+            reply_markup=kb,
+            reply_to_message_id=user_msg_id if user_msg_id else None,
+            allow_sending_without_reply=True
         )
     except Exception as e:
         try:
