@@ -1,34 +1,44 @@
 """
-Scheduler — persists delete jobs so Render spin-down doesn't lose them.
-Jobs are stored in MongoDB so they survive restarts.
+Scheduler — simple in-memory task manager.
+Keeps strong references so GC never cancels pending deletions.
+No DB, no APScheduler — just asyncio done right.
 """
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.mongodb import MongoDBJobStore
-from apscheduler.executors.asyncio import AsyncIOExecutor
+import asyncio
 import logging
 
-from config import MONGO_URI
+logger = logging.getLogger(__name__)
 
-logger    = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler(
-    jobstores={
-        "default": MongoDBJobStore(
-            database="CosmicBotz",
-            collection="scheduler_jobs",
-            host=MONGO_URI
-        )
-    },
-    executors={"default": AsyncIOExecutor()},
-    job_defaults={"coalesce": True, "max_instances": 5},
-)
+
+class TaskManager:
+    def __init__(self):
+        self._tasks: set[asyncio.Task] = set()
+
+    def schedule(self, coro, delay: int):
+        """Schedule a coroutine to run after `delay` seconds."""
+        async def _runner():
+            await asyncio.sleep(delay)
+            await coro
+
+        task = asyncio.create_task(_runner())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        logger.debug(f"Scheduled task in {delay}s — {len(self._tasks)} pending")
+
+    def cancel_all(self):
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
+
+
+# Global singleton
+task_manager = TaskManager()
 
 
 def setup_scheduler():
-    scheduler.start()
-    logger.info("✅ Scheduler started.")
+    # Nothing to start — asyncio event loop handles everything
+    logger.info("✅ Task manager ready.")
 
 
 def stop_scheduler():
-    if scheduler.running:
-        scheduler.shutdown()
-        logger.info("Scheduler stopped.")
+    task_manager.cancel_all()
+    logger.info("Task manager stopped.")
