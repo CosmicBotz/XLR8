@@ -107,10 +107,16 @@ def join_groups_keyboard(groups: list) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def confirm_remove_slot_keyboard(channel_id: int, slot_name: str):
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Yes, Remove", callback_data=f"rmslot_{channel_id}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel")]
-    ])
-    return kb
+def quick_add_slot_keyboard(channel_id: int, channel_name: str) -> InlineKeyboardMarkup:
+    """Notification buttons when bot is made admin in a channel."""
+    safe_name = channel_name.replace("|", "-")
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="➕ Add as Slot",
+            callback_data="qslot_add|" + str(channel_id) + "|" + safe_name[:40]
+        ),
+        InlineKeyboardButton(
+            text="❌ Ignore",
+            callback_data="qslot_ignore"
+        )
+    ]])
