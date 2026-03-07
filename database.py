@@ -1,6 +1,5 @@
 """
 database.py — Single database module for Auto Filter CosmicBotz.
-
 """
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -58,6 +57,10 @@ class Database:
         await db.filters.create_index([("title",        ASCENDING)])
         await db.slots.create_index(  [("owner_id",     ASCENDING)])
         await db.groups.create_index( [("group_id",     ASCENDING)], unique=True)
+        await db.search_logs.create_index([("count",  -1)])
+        await db.search_logs.create_index([("query",  ASCENDING)], unique=True)
+        await db.analytics.create_index(  [("day",    ASCENDING)])
+        await db.analytics.create_index(  [("found",  ASCENDING)])
         logger.info("✅ MongoDB indexes ensured")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -402,18 +405,109 @@ class Database:
         return result.deleted_count > 0
 
     # ══════════════════════════════════════════════════════════════════════════
+    # SEARCH LOGS  (missed searches + analytics)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def log_missed_search(self, query: str, user_id: int, group_id: int):
+        """Record a search that returned no results."""
+        db  = self.db()
+        now = datetime.utcnow()
+        await db.search_logs.update_one(
+            {"query": query.lower().strip()},
+            {
+                "$inc":  {"count": 1},
+                "$set":  {"last_searched": now},
+                "$setOnInsert": {"first_searched": now, "fulfilled": False},
+                "$addToSet": {"groups": group_id}
+            },
+            upsert=True
+        )
+
+    async def log_search(self, query: str, user_id: int, group_id: int, found: bool):
+        """Record every search for analytics."""
+        db  = self.db()
+        now = datetime.utcnow()
+        await db.analytics.insert_one({
+            "query":    query.lower().strip(),
+            "user_id":  user_id,
+            "group_id": group_id,
+            "found":    found,
+            "date":     now,
+            "day":      now.strftime("%Y-%m-%d")
+        })
+
+    async def get_missed_searches(self, limit: int = 10) -> list:
+        """Top unmatched searches sorted by count."""
+        db = self.db()
+        cursor = db.search_logs.find(
+            {"fulfilled": False}
+        ).sort("count", -1).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def mark_fulfilled(self, query: str):
+        """Mark a missed search as fulfilled after content is added."""
+        await self.db().search_logs.update_one(
+            {"query": query.lower().strip()},
+            {"$set": {"fulfilled": True}}
+        )
+
+    async def get_analytics(self) -> dict:
+        """Aggregated analytics for /stats."""
+        db  = self.db()
+        now = datetime.utcnow()
+        today = now.strftime("%Y-%m-%d")
+
+        total_searches = await db.analytics.count_documents({})
+        today_searches = await db.analytics.count_documents({"day": today})
+        today_found    = await db.analytics.count_documents({"day": today, "found": True})
+        today_missed   = await db.analytics.count_documents({"day": today, "found": False})
+
+        # Most searched today
+        pipeline = [
+            {"$match": {"day": today}},
+            {"$group": {"_id": "$query", "count": {"$sum": 1}}},
+            {"$sort":  {"count": -1}},
+            {"$limit": 1}
+        ]
+        top_cursor = db.analytics.aggregate(pipeline)
+        top_docs   = await top_cursor.to_list(length=1)
+        top_today  = top_docs[0]["_id"] if top_docs else None
+
+        # Most active group today
+        pipeline2 = [
+            {"$match": {"day": today}},
+            {"$group": {"_id": "$group_id", "count": {"$sum": 1}}},
+            {"$sort":  {"count": -1}},
+            {"$limit": 1}
+        ]
+        grp_cursor  = db.analytics.aggregate(pipeline2)
+        grp_docs    = await grp_cursor.to_list(length=1)
+        top_group   = grp_docs[0]["_id"] if grp_docs else None
+        top_grp_cnt = grp_docs[0]["count"] if grp_docs else 0
+
+        return {
+            "total_searches": total_searches,
+            "today_searches": today_searches,
+            "today_found":    today_found,
+            "today_missed":   today_missed,
+            "top_today":      top_today,
+            "top_group_id":   top_group,
+            "top_group_cnt":  top_grp_cnt,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
     # STATS
     # ══════════════════════════════════════════════════════════════════════════
 
     async def get_stats(self) -> dict:
         db = self.db()
         return {
-            "total":   await db.filters.count_documents({}),
-            "anime":   await db.filters.count_documents({"media_type": "anime"}),
-            "tvshow":  await db.filters.count_documents({"media_type": "tvshow"}),
-            "movie":   await db.filters.count_documents({"media_type": "movie"}),
-            "slots":   await db.slots.count_documents({}),
-            "groups":  await db.groups.count_documents({}),
+            "total":           await db.filters.count_documents({}),
+            "anime":           await db.filters.count_documents({"media_type": "anime"}),
+            "tvshow":          await db.filters.count_documents({"media_type": "tvshow"}),
+            "movie":           await db.filters.count_documents({"media_type": "movie"}),
+            "slots":           await db.slots.count_documents({}),
+            "groups":          await db.groups.count_documents({}),
             "verified_groups": await db.groups.count_documents({"verified": True}),
         }
 
