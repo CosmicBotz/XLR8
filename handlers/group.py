@@ -43,7 +43,7 @@ async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
                 "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
                 "Do you want to add this channel as a content slot?"
             ),
-            reply_markup=quick_add_slot_keyboard(chat.id, chat.title or "Unknown"),
+            reply_markup=quick_add_slot_keyboard(chat.id, chat.title or ""),
             parse_mode="HTML"
         )
     except Exception as e:
@@ -62,7 +62,7 @@ async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
                         "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
                         "Do you want to add this channel as a content slot?"
                     ),
-                    reply_markup=quick_add_slot_keyboard(chat.id, chat.title or "Unknown"),
+                    reply_markup=quick_add_slot_keyboard(chat.id, chat.title or ""),
                     parse_mode="HTML"
                 )
             except Exception:
@@ -243,14 +243,14 @@ async def cb_quick_slot(call: CallbackQuery, bot: Bot, is_owner: bool = False, i
         await call.message.edit_text("❌ Channel ignored.")
         return
 
-    # qslot_add|channel_id|channel_name
+    # qslot_add|channel_id|name_truncated
     parts = call.data.split("|", 2)
-    if len(parts) < 3:
+    if len(parts) < 2:
         await call.message.edit_text("⚠️ Invalid data.")
         return
 
     channel_id   = int(parts[1])
-    channel_name = parts[2]
+    channel_name = parts[2] if len(parts) > 2 else str(channel_id)
 
     ok, msg = await CosmicBotz.add_slot(
         owner_id=call.from_user.id,
