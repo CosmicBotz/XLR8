@@ -20,10 +20,11 @@ from services.caption import build_caption
 from services.thumbnail import build_thumbnail
 from keyboards.inline import (
     tmdb_results_keyboard, media_type_keyboard,
-    confirm_add_keyboard, watch_download_keyboard
+    confirm_add_keyboard, watch_download_keyboard, slot_list_keyboard
 )
 from config import LOG_CHANNEL_ID
 import json
+import unicodedata
 
 router = Router()
 
@@ -32,6 +33,7 @@ class AddContentState(StatesGroup):
     select_media_type = State()
     search_query      = State()
     select_result     = State()
+    select_slot       = State()
     confirm_add       = State()
 
 
@@ -132,8 +134,46 @@ async def cb_select_tmdb(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 
-    await call.message.answer(
-        "✅ Confirm adding to index?\n"
+    # Ask which slot to use for the invite link
+    slots = await CosmicBotz.get_slots_all()
+    if not slots:
+        await call.message.answer(
+            "⚠️ No slots configured. Use /addslot first.",
+            parse_mode="HTML"
+        )
+        await state.clear()
+        return
+
+    if len(slots) == 1:
+        # Only one slot — skip selection, go straight to confirm
+        await state.update_data(selected_slot=slots[0]["channel_id"])
+        await call.message.answer(
+            f"✅ Slot: <b>{slots[0]['slot_name']}</b>\n\n"
+            "Confirm adding to index?\n"
+            "<i>Bot will post to Log Channel with a permanent invite link.</i>",
+            reply_markup=confirm_add_keyboard(),
+            parse_mode="HTML"
+        )
+        await state.set_state(AddContentState.confirm_add)
+    else:
+        await call.message.answer(
+            "📢 <b>Select a slot</b> for the invite link:",
+            reply_markup=slot_list_keyboard(slots),
+            parse_mode="HTML"
+        )
+        await state.set_state(AddContentState.select_slot)
+
+
+
+@router.callback_query(F.data.startswith("slot_"), AddContentState.select_slot)
+async def cb_select_slot(call: CallbackQuery, state: FSMContext):
+    channel_id = int(call.data.split("_", 1)[1])
+    slot = await CosmicBotz.get_slot(channel_id)
+    slot_name = slot["slot_name"] if slot else str(channel_id)
+    await state.update_data(selected_slot=channel_id)
+    await call.message.edit_text(
+        f"✅ Slot: <b>{slot_name}</b>\n\n"
+        "Confirm adding to index?\n"
         "<i>Bot will post to Log Channel with a permanent invite link.</i>",
         reply_markup=confirm_add_keyboard(),
         parse_mode="HTML"
@@ -156,6 +196,10 @@ async def cb_confirm_add(call: CallbackQuery, state: FSMContext, bot: Bot):
         return
 
     # Save to filter index first to get filter_id
+    # Normalize title: strip diacritics so "Shippūden" stored as "Shippuden"
+    raw_title = media_data.get("title", "")
+    normalized = unicodedata.normalize("NFD", raw_title)
+    media_data["title"] = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
     filter_id = await CosmicBotz.add_filter(media_data.copy())
     if not filter_id:
         await call.message.edit_text("⚠️ This title already exists in the index!")
@@ -169,18 +213,17 @@ async def cb_confirm_add(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.message.edit_text("⏳ Posting to Log Channel...")
 
     # ── Create permanent invite link ──────────────────────────────────────────
-    slots = await CosmicBotz.get_slots_all()
+    selected_slot    = data.get("selected_slot")
     permanent_invite = None
 
-    if slots:
+    if selected_slot:
         try:
-            # Permanent = no expire_date, no member_limit
             link = await bot.create_chat_invite_link(
-                chat_id=slots[0]["channel_id"],
+                chat_id=selected_slot,
                 creates_join_request=False
             )
             permanent_invite = link.invite_link
-        except Exception as e:
+        except Exception:
             permanent_invite = None
 
     # ── Build caption + keyboard for log channel ──────────────────────────────
