@@ -318,19 +318,82 @@ async def cb_delete_cancel(call: CallbackQuery):
 @owner_only
 async def cmd_setcaption(message: Message, **kwargs):
     from database import CosmicBotz as _db
-    settings = await _db.get_settings()
-    quality  = settings.get("caption_quality", "1080p FHD | 720p HD | 480p WEB-DL")
-    audio    = settings.get("caption_audio",   "हिंदी (Hindi)")
+    from services.caption import DEFAULT_TEMPLATE_SERIES, DEFAULT_TEMPLATE_MOVIE, CAPTION_VARIABLES
 
-    await message.answer(
-        "✏️ <b>Caption Settings</b>\n\n"
-        f"🎬 <b>Quality:</b> <code>{quality}</code>\n"
-        f"🔊 <b>Audio:</b> <code>{audio}</code>\n\n"
-        "To change:\n"
-        "<code>/setquality 1080p FHD | 720p HD | 480p WEB-DL</code>\n"
-        "<code>/setaudio हिंदी (Hindi) #Official</code>",
-        parse_mode="HTML"
-    )
+    args     = message.text.split(maxsplit=2)
+    settings = await _db.get_settings()
+
+    # /setcaption — show current templates + all variables
+    if len(args) == 1:
+        series_t = settings.get("caption_template_series", DEFAULT_TEMPLATE_SERIES)
+        movie_t  = settings.get("caption_template_movie",  DEFAULT_TEMPLATE_MOVIE)
+        vars_txt = "\n".join(f"<code>{k}</code> — {v}" for k, v in CAPTION_VARIABLES.items())
+        await message.answer(
+            "✏️ <b>Caption Templates</b>\n\n"
+            "<b>📺 Series/Anime template:</b>\n"
+            f"<code>{series_t}</code>\n\n"
+            "<b>🎬 Movie template:</b>\n"
+            f"<code>{movie_t}</code>\n\n"
+            "──────────────\n"
+            "<b>Available variables:</b>\n"
+            f"{vars_txt}\n\n"
+            "To change:\n"
+            "<code>/setcaption series YOUR TEMPLATE</code>\n"
+            "<code>/setcaption movie YOUR TEMPLATE</code>\n"
+            "<code>/setcaption reset</code> — restore defaults\n\n"
+            "<i>Use \\n for line breaks in template</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    sub = args[1].lower().strip()
+
+    if sub == "reset":
+        await _db.update_setting("caption_template_series", DEFAULT_TEMPLATE_SERIES)
+        await _db.update_setting("caption_template_movie",  DEFAULT_TEMPLATE_MOVIE)
+        await message.answer("✅ Caption templates reset to defaults.")
+        return
+
+    if sub not in ("series", "movie"):
+        await message.answer(
+            "Usage:\n"
+            "<code>/setcaption series TEMPLATE</code>\n"
+            "<code>/setcaption movie TEMPLATE</code>\n"
+            "<code>/setcaption reset</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    if len(args) < 3:
+        await message.answer(
+            f"⚠️ Provide a template after <code>{sub}</code>.\n\n"
+            "Example:\n"
+            "<code>/setcaption series &lt;b&gt;{{title}}&lt;/b&gt;\n&lt;blockquote&gt;▶ Episodes: {{episodes}}\n▶ Audio: {{audio}}&lt;/blockquote&gt;</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    template = args[2].strip().replace("\\n", "\n")
+
+    # Validate — try formatting with dummy data
+    try:
+        template.format(
+            title="Test", type="Anime Series (2020)", year="2020",
+            status="Ended", episodes="24", season="1",
+            quality="1080p", audio="Hindi", genres="Action",
+            runtime="24", overview="Test overview"
+        )
+    except KeyError as e:
+        await message.answer(
+            f"⚠️ Unknown variable: <code>{e}</code>\n"
+            "Use /setcaption to see valid variables.",
+            parse_mode="HTML"
+        )
+        return
+
+    key = "caption_template_series" if sub == "series" else "caption_template_movie"
+    await _db.update_setting(key, template)
+    await message.answer(f"✅ <b>{sub.title()}</b> caption template updated!", parse_mode="HTML")
 
 
 @router.message(Command("setquality"))
