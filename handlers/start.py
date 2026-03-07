@@ -23,9 +23,8 @@ def _owner_text(name: str) -> str:
         "<b>🌐 Groups:</b>\n"
         "/groups · /verifygroup\n\n"
         "<b>⚙️ Settings:</b>\n"
-        "/setrevoke · /settings · /stats"\n\n"
+        "/setrevoke · /settings · /stats\n\n"
         "/ping · /uptime"
-        
     )
 
 
