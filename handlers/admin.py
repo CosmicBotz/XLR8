@@ -514,3 +514,53 @@ async def cmd_delabbr(message: Message, **kwargs):
         await message.answer(f"✅ Removed abbreviation: <code>{abbr.upper()}</code>", parse_mode="HTML")
     else:
         await message.answer(f"⚠️ <code>{abbr.upper()}</code> not found.", parse_mode="HTML")
+
+
+# ── /filters ──────────────────────────────────────────────────────────────────
+
+@router.message(Command("filters"))
+@owner_only
+async def cmd_filters(message: Message, **kwargs):
+    from database import CosmicBotz as _db
+    from aiogram.types import BufferedInputFile
+
+    db     = _db.db()
+    cursor = db.filters.find({}).sort("title", 1)
+    docs   = await cursor.to_list(length=5000)
+
+    if not docs:
+        await message.answer("📭 No filters saved yet.")
+        return
+
+    lines = []
+    for i, d in enumerate(docs, 1):
+        status  = "✅" if d.get("posted") else "⏳"
+        mtype   = d.get("media_type", "?").title()
+        year    = d.get("year", "")
+        year_str = (" (" + str(year) + ")") if year else ""
+        lines.append(str(i) + ". " + status + " [" + mtype + "] " + d.get("title", "?") + year_str)
+
+    total  = len(docs)
+    posted = sum(1 for d in docs if d.get("posted"))
+    header = (
+        "📋 All Filters (" + str(total) + " total | "
+        + str(posted) + " posted | "
+        + str(total - posted) + " pending)\n"
+        + "─" * 30 + "\n"
+    )
+
+    full_text = header + "\n".join(lines)
+
+    # Send as file if too long
+    if len(full_text) > 3500:
+        file_bytes = full_text.encode("utf-8")
+        await message.answer_document(
+            BufferedInputFile(file_bytes, filename="filters.txt"),
+            caption="📋 <b>All Filters</b> — " + str(total) + " total, " + str(posted) + " posted",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            "<pre>" + full_text + "</pre>",
+            parse_mode="HTML"
+        )
