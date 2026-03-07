@@ -134,15 +134,24 @@ async def cb_show_title(call: CallbackQuery, bot: Bot):
     settings       = await CosmicBotz.get_settings()
     revoke_minutes = settings.get("auto_revoke_minutes", 30)
 
-    # Generate fresh expiring invite link to SLOT CHANNEL
+    # Generate fresh expiring invite link to THIS title's specific slot channel
     from services.link_gen import create_invite_link
-    slots       = await CosmicBotz.get_slots_all()
-    invite_link = None
-    if slots:
+    slot_channel_id = item.get("slot_channel_id") or 0
+    invite_link     = None
+
+    if slot_channel_id:
         try:
-            invite_link = await create_invite_link(bot, slots[0]["channel_id"], revoke_minutes)
+            invite_link = await create_invite_link(bot, slot_channel_id, revoke_minutes)
         except Exception:
             invite_link = item.get("permanent_invite") or None
+    else:
+        # Fallback for old entries that don't have slot_channel_id stored
+        slots = await CosmicBotz.get_slots_all()
+        if slots:
+            try:
+                invite_link = await create_invite_link(bot, slots[0]["channel_id"], revoke_minutes)
+            except Exception:
+                invite_link = item.get("permanent_invite") or None
 
     kb = watch_download_keyboard(invite_link, f"{revoke_minutes} min") if invite_link else None
 
