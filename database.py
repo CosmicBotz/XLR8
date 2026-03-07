@@ -6,7 +6,7 @@ database.py — Single database module for Auto Filter CosmicBotz.
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING
 from bson import ObjectId
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import MONGO_URI, DB_NAME, AUTO_REVOKE_MINUTES, OWNER_ID
 import logging
 
@@ -58,7 +58,6 @@ class Database:
         await db.filters.create_index([("title",        ASCENDING)])
         await db.slots.create_index(  [("owner_id",     ASCENDING)])
         await db.groups.create_index( [("group_id",     ASCENDING)], unique=True)
-        await db.posts.create_index(  [("expires_at",   ASCENDING)], expireAfterSeconds=0)
         logger.info("✅ MongoDB indexes ensured")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -309,51 +308,6 @@ class Database:
             {"$set": {key: value}},
             upsert=True
         )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # POSTS  (invite link tracking)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    async def save_post(
-        self,
-        channel_id: int,
-        message_id: int,
-        invite_link: str,
-        revoke_minutes: int
-    ) -> tuple[str, datetime]:
-        db = self.db()
-        expires_at = datetime.utcnow() + timedelta(minutes=revoke_minutes)
-        result = await db.posts.insert_one({
-            "channel_id":  channel_id,
-            "message_id":  message_id,
-            "invite_link": invite_link,
-            "expires_at":  expires_at,
-            "revoked":     False,
-            "created_at":  datetime.utcnow()
-        })
-        return str(result.inserted_id), expires_at
-
-    async def get_pending_revokes(self) -> list:
-        """Posts whose invite link has expired and not yet revoked."""
-        db = self.db()
-        cursor = db.posts.find(
-            {"expires_at": {"$lte": datetime.utcnow()}, "revoked": False}
-        )
-        return await cursor.to_list(length=100)
-
-    async def mark_revoked(self, post_id: str):
-        db = self.db()
-        await db.posts.update_one(
-            {"_id": ObjectId(post_id)},
-            {"$set": {"revoked": True}}
-        )
-
-    async def get_active_post(self, channel_id: int, message_id: int) -> dict | None:
-        return await self.db().posts.find_one({
-            "channel_id": channel_id,
-            "message_id": message_id,
-            "revoked":    False
-        })
 
     # ══════════════════════════════════════════════════════════════════════════
     # GROUPS  (verification)
