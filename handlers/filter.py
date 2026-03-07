@@ -134,23 +134,17 @@ async def cb_show_title(call: CallbackQuery, bot: Bot):
     settings       = await CosmicBotz.get_settings()
     revoke_minutes = settings.get("auto_revoke_minutes", 30)
 
-    # Get this group's stored invite link
-    group_doc    = await CosmicBotz.get_group(chat_id)
-    group_invite = group_doc.get("invite_link", "") if group_doc else ""
-
-    # Generate one on the fly if missing
-    if not group_invite:
+    # Generate fresh expiring invite link to SLOT CHANNEL
+    from services.link_gen import create_invite_link
+    slots       = await CosmicBotz.get_slots_all()
+    invite_link = None
+    if slots:
         try:
-            link         = await bot.create_chat_invite_link(chat_id=chat_id, creates_join_request=False)
-            group_invite = link.invite_link
-            await CosmicBotz.db().groups.update_one(
-                {"group_id": chat_id},
-                {"$set": {"invite_link": group_invite}}
-            )
+            invite_link = await create_invite_link(bot, slots[0]["channel_id"], revoke_minutes)
         except Exception:
-            pass
+            invite_link = item.get("permanent_invite") or None
 
-    kb = watch_download_keyboard(group_invite, f"{revoke_minutes} min") if group_invite else None
+    kb = watch_download_keyboard(invite_link, f"{revoke_minutes} min") if invite_link else None
 
     # Delete bot index message immediately
     try:
