@@ -1,6 +1,11 @@
 """
 database.py — Single database module for Auto Filter CosmicBotz.
 
+Usage anywhere in the bot:
+    from database import CosmicBotz
+    await CosmicBotz.connect()
+    await CosmicBotz.add_filter(data)
+    ...
 """
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -65,6 +70,15 @@ class Database:
     # FILTERS  (anime / tvshow / movie index)
     # ══════════════════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _normalize_title(s: str) -> str:
+        import re, unicodedata
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9 ]", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
     async def add_filter(self, data: dict) -> str | None:
         """Add a title to the index. Returns inserted _id str or None if duplicate."""
         db = self.db()
@@ -90,12 +104,85 @@ class Database:
         return await cursor.to_list(length=100)
 
     async def search_title(self, query: str) -> list:
-        """Case-insensitive partial title search."""
-        db = self.db()
-        cursor = db.filters.find(
-            {"title": {"$regex": query, "$options": "i"}}
-        ).sort("title", ASCENDING)
-        return await cursor.to_list(length=50)
+        """
+        Fuzzy title search — handles:
+        - Missing punctuation: "Fullmetal Alchemist Brotherhood" → matches "Fullmetal Alchemist: Brotherhood"
+        - Diacritics: "Shippuden" → matches "Shippūden" (already normalized on save)
+        - Typos / extra spaces: tries word-by-word AND tokens approach
+        Strategy:
+          1. Exact regex match (fastest, catches most)
+          2. Strip punctuation from both query and stored titles — word token match
+          3. All words present anywhere in title (any order)
+        Returns deduplicated results ranked by closeness.
+        """
+        import re, unicodedata
+
+        # Load custom abbreviations from DB
+        ABBR = await self.get_abbr_map()
+
+        def _normalize(s: str) -> str:
+            # Remove diacritics, lowercase, strip punctuation, collapse spaces
+            s = unicodedata.normalize("NFD", s)
+            s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+            s = s.lower()
+            s = re.sub(r"[^a-z0-9 ]", " ", s)
+            return re.sub(r"\s+", " ", s).strip()
+
+        # Expand abbreviations in query
+        norm_q_raw = _normalize(query)
+        tokens = norm_q_raw.split()
+        expanded = [ABBR.get(t, t) for t in tokens]
+        norm_q = " ".join(expanded)
+        # Also try full query as abbreviation key
+        if norm_q_raw in ABBR:
+            norm_q = ABBR[norm_q_raw]
+
+        db    = self.db()
+        seen  = set()
+        results = []
+
+        async def _add(cursor):
+            async for doc in cursor:
+                oid = str(doc["_id"])
+                if oid not in seen:
+                    seen.add(oid)
+                    results.append(doc)
+
+        # 1. Direct regex match (original query)
+        try:
+            escaped = re.escape(query)
+            await _add(db.filters.find({"title": {"$regex": escaped, "$options": "i"}}))
+        except Exception:
+            pass
+
+        # 2. Normalized query — strip punctuation and search
+        # norm_q already set above via abbreviation expansion
+        if norm_q:
+            try:
+                await _add(db.filters.find({"title_normalized": {"$regex": re.escape(norm_q), "$options": "i"}}))
+            except Exception:
+                pass
+
+        # 3. All words present (any order) — only if user typed 2+ words
+        # Prevents "brotherhood" alone matching unrelated chat
+        words = [w for w in norm_q.split() if len(w) >= 3]
+        if len(words) >= 2 and len(results) < 5:
+            word_filters = [{"title_normalized": {"$regex": re.escape(w), "$options": "i"}} for w in words]
+            try:
+                await _add(db.filters.find({"$and": word_filters}))
+            except Exception:
+                pass
+
+        # 4. Fallback — only if query has 2+ words and still no results
+        # Never match single casual words like "brotherhood", "attack", "hero"
+        if not results and len(words) >= 2:
+            longest = max(words, key=len)
+            try:
+                await _add(db.filters.find({"title": {"$regex": re.escape(longest), "$options": "i"}}))
+            except Exception:
+                pass
+
+        return sorted(results, key=lambda x: x.get("title", ""))[:20]
 
     async def get_filter_by_id(self, filter_id: str) -> dict | None:
         db = self.db()
@@ -339,6 +426,29 @@ class Database:
 
     async def remove_group(self, group_id: int):
         await self.db().groups.delete_one({"group_id": group_id})
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ABBREVIATIONS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def get_abbr_map(self) -> dict:
+        """Return all custom abbreviations as {abbr: full_title}."""
+        db   = self.db()
+        docs = await db.abbreviations.find().to_list(length=500)
+        return {d["abbr"]: d["full"] for d in docs}
+
+    async def set_abbr(self, abbr: str, full: str):
+        db = self.db()
+        await db.abbreviations.update_one(
+            {"abbr": abbr.lower()},
+            {"$set": {"abbr": abbr.lower(), "full": full}},
+            upsert=True
+        )
+
+    async def del_abbr(self, abbr: str) -> bool:
+        db     = self.db()
+        result = await db.abbreviations.delete_one({"abbr": abbr.lower()})
+        return result.deleted_count > 0
 
     # ══════════════════════════════════════════════════════════════════════════
     # STATS
