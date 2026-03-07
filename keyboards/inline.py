@@ -107,13 +107,17 @@ def join_groups_keyboard(groups: list) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def quick_add_slot_keyboard(channel_id: int, channel_name: str) -> InlineKeyboardMarkup:
-    """Notification buttons when bot is made admin in a channel."""
-    safe_name = channel_name.replace("|", "-")
+def quick_add_slot_keyboard(channel_id: int, channel_name: str = "") -> InlineKeyboardMarkup:
+    """Notification buttons when bot is made admin in a channel.
+    Fits channel name inside Telegram's 64-byte callback_data limit.
+    """
+    prefix   = "qslot_add|" + str(channel_id) + "|"
+    max_name = 64 - len(prefix.encode())          # bytes left for name
+    name_trunc = channel_name.encode()[:max_name].decode("utf-8", errors="ignore").strip()
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
             text="➕ Add as Slot",
-            callback_data="qslot_add|" + str(channel_id) + "|" + safe_name[:40]
+            callback_data=prefix + name_trunc
         ),
         InlineKeyboardButton(
             text="❌ Ignore",
