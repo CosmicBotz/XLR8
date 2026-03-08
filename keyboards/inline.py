@@ -151,3 +151,18 @@ def settings_keyboard(current_revoke: int = 30) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Refresh",      callback_data="settings_refresh"),
         ]
     ])
+
+
+def quick_tmdb_keyboard(results: list, channel_id: int) -> InlineKeyboardMarkup:
+    """Show TMDB search results for quick-slot auto-flow."""
+    rows = []
+    for r in results[:5]:
+        tmdb_id = r.get("id", 0)
+        title   = (r.get("title") or r.get("name") or "Unknown")[:40]
+        year    = (r.get("release_date") or r.get("first_air_date") or "")[:4]
+        mtype   = "movie" if r.get("release_date") else "tv"
+        label   = title + (" (" + year + ")" if year else "")
+        cb      = "qslot_tmdb|" + str(channel_id) + "|" + str(tmdb_id) + "|" + mtype
+        rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
+    rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="qslot_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
