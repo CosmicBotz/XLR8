@@ -1,160 +1,232 @@
 """
-analytics.py — Search logs & analytics for Auto Filter CosmicBotz.
-
-Initialised automatically by database.py after connect():
-    Analytics.init(db)  ← called inside Database.connect()
-
-Usage anywhere in the bot:
-    from analytics import Analytics
-    await Analytics.log_search(query, user_id, group_id, found=True)
-    await Analytics.log_missed_search(query, user_id, group_id)
-    data = await Analytics.get_analytics()
+Filter handler — letter index + title search.
+- Single result → send post directly (user msg + post deleted together after timer)
+- Multiple results → show buttons
+- Group: all users get filter
+- DM: owner/admin get full filter, regular users get join group message
+- Silent on no results
 """
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery
+from aiogram.enums import ChatType
 
-from datetime import datetime
-import logging
+from database import CosmicBotz
+from services.caption import build_index_caption
+from services.link_gen import create_invite_link
+from keyboards.inline import index_results_keyboard, watch_download_keyboard, join_groups_keyboard
+from utils.scheduler import task_manager
 
-logger = logging.getLogger(__name__)
+router   = Router()
+ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 
-class Analytics:
+# ── Delete helper ─────────────────────────────────────────────────────────────
 
-    _db = None  # injected by Database.connect()
+async def _delete_messages(bot: Bot, chat_id: int, message_ids: list):
+    for mid in message_ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
 
-    @classmethod
-    def init(cls, db):
-        cls._db = db
 
-    @classmethod
-    def _get_db(cls):
-        if cls._db is None:
-            raise RuntimeError("Analytics not initialised. Call Analytics.init(db) first.")
-        return cls._db
+# ── Send post helper ──────────────────────────────────────────────────────────
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # INDEX SETUP
-    # ──────────────────────────────────────────────────────────────────────────
+async def _send_post(
+    bot: Bot,
+    item: dict,
+    chat_id: int,
+    revoke_minutes: int,
+    user_msg_id: int      # deleted together with post after timer
+):
+    slot_channel_id = item.get("slot_channel_id") or 0
+    invite_link     = None
 
-    @classmethod
-    async def ensure_indexes(cls):
-        from pymongo import ASCENDING
-        db = cls._get_db()
-        await db.search_logs.create_index([("count",    -1)])
-        await db.search_logs.create_index([("query",    ASCENDING)], unique=True)
-        await db.analytics.create_index(  [("day",      ASCENDING)])
-        await db.analytics.create_index(  [("found",    ASCENDING)])
-        await db.analytics.create_index(  [("group_id", ASCENDING)])
-        logger.info("✅ Analytics indexes ensured")
+    if slot_channel_id:
+        try:
+            invite_link = await create_invite_link(bot, slot_channel_id, revoke_minutes)
+        except Exception:
+            invite_link = item.get("permanent_invite") or None
+    else:
+        slots = await CosmicBotz.get_slots_all()
+        if slots:
+            try:
+                invite_link = await create_invite_link(bot, slots[0]["channel_id"], revoke_minutes)
+            except Exception:
+                invite_link = item.get("permanent_invite") or None
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # LOGGING
-    # ──────────────────────────────────────────────────────────────────────────
+    kb = watch_download_keyboard(invite_link, str(revoke_minutes) + " min") if invite_link else None
 
-    @classmethod
-    async def log_missed_search(cls, query: str, user_id: int, group_id: int):
-        """Record a search that returned no results."""
-        db  = cls._get_db()
-        now = datetime.utcnow()
-        await db.search_logs.update_one(
-            {"query": query.lower().strip()},
-            {
-                "$inc":         {"count": 1},
-                "$set":         {"last_searched": now},
-                "$setOnInsert": {"first_searched": now, "fulfilled": False},
-                "$addToSet":    {"groups": group_id},
-            },
-            upsert=True,
+    try:
+        sent = await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=item["log_channel_id"],
+            message_id=item["message_id"],
+            reply_markup=kb,
+            reply_to_message_id=user_msg_id if user_msg_id else None,
+            allow_sending_without_reply=True
+        )
+    except Exception as e:
+        try:
+            await bot.send_message(chat_id, "⚠️ Could not retrieve post. Error: " + str(e))
+        except Exception:
+            pass
+        return
+
+    # Delete user msg + bot post together after timer
+    await task_manager.schedule(
+        _delete_messages(bot, chat_id, [sent.message_id, user_msg_id]),
+        delay=revoke_minutes * 60
+    )
+
+
+# ── Join groups helper ────────────────────────────────────────────────────────
+
+async def _send_join_groups(message: Message):
+    groups = await CosmicBotz.get_verified_group_links()
+    if groups:
+        await message.answer(
+            "📢 <b>Use me inside our group!</b>\n\nJoin a verified group to browse and get content:",
+            reply_markup=join_groups_keyboard(groups),
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer("📢 Use me inside a verified group to get content!")
+
+
+# ── Filter core logic (shared by group and privileged DM) ────────────────────
+
+async def _handle_filter(
+    bot: Bot,
+    message: Message,
+    text: str,
+    revoke_minutes: int
+):
+    # Single letter → index
+    if len(text) == 1 and text.upper() in ALPHABET:
+        letter  = text.upper()
+        results = await CosmicBotz.get_by_letter(letter)
+        if not results:
+            return
+
+        if len(results) == 1:
+            item = results[0]
+            if item.get("posted") and item.get("log_channel_id") and item.get("message_id"):
+                await _send_post(bot, item, message.chat.id, revoke_minutes, message.message_id)
+                return
+
+        await message.answer(
+            build_index_caption(letter, results),
+            reply_markup=index_results_keyboard(results),
+            parse_mode="HTML"
+        )
+        return
+
+    # Multi-char → search
+    if len(text) >= 2:
+        uid      = message.from_user.id if message.from_user else 0
+        gid      = message.chat.id
+        results  = await CosmicBotz.search_title(text)
+
+        if not results:
+            await CosmicBotz.log_missed_search(text, uid, gid)
+            return
+
+        await CosmicBotz.log_search(text, uid, gid, found=True)
+
+        if len(results) == 1:
+            item = results[0]
+            if item.get("posted") and item.get("log_channel_id") and item.get("message_id"):
+                await _send_post(bot, item, message.chat.id, revoke_minutes, message.message_id)
+                return
+
+        title = "🔍 <b>Search: '" + text + "'</b>\nFound: <b>" + str(len(results)) + "</b> result(s)"
+        await message.answer(
+            title,
+            reply_markup=index_results_keyboard(results),
+            parse_mode="HTML"
         )
 
-    @classmethod
-    async def log_search(cls, query: str, user_id: int, group_id: int, found: bool):
-        """Record every search for analytics."""
-        db  = cls._get_db()
-        now = datetime.utcnow()
-        await db.analytics.insert_one({
-            "query":    query.lower().strip(),
-            "user_id":  user_id,
-            "group_id": group_id,
-            "found":    found,
-            "date":     now,
-            "day":      now.strftime("%Y-%m-%d"),
-        })
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # MISSED SEARCHES
-    # ──────────────────────────────────────────────────────────────────────────
+# ── Text handler ──────────────────────────────────────────────────────────────
 
-    @classmethod
-    async def get_missed_searches(cls, limit: int = 10) -> list:
-        """Top unmatched searches sorted by count."""
-        db     = cls._get_db()
-        cursor = db.search_logs.find({"fulfilled": False}).sort("count", -1).limit(limit)
-        return await cursor.to_list(length=limit)
+@router.message(F.text)
+async def handle_text(
+    message: Message,
+    bot: Bot,
+    is_group: bool     = False,
+    is_admin: bool     = False,
+    is_owner: bool     = False,
+    group_verified: bool = True,
+    **kwargs
+):
+    if is_group and not group_verified:
+        return
 
-    @classmethod
-    async def mark_fulfilled(cls, query: str):
-        """Mark a missed search as fulfilled after content is added."""
-        db = cls._get_db()
-        await db.search_logs.update_one(
-            {"query": query.lower().strip()},
-            {"$set": {"fulfilled": True}},
-        )
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        return
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # AGGREGATED ANALYTICS  (used by /stats in start.py)
-    # ──────────────────────────────────────────────────────────────────────────
+    is_private    = message.chat.type == ChatType.PRIVATE
+    is_privileged = is_admin or is_owner
 
-    @classmethod
-    async def get_analytics(cls) -> dict:
-        """
-        Returns dict used by /stats in start.py:
-            today_searches, today_found, today_missed
-            total_searches, total_found, total_missed, hit_rate
-            top_today      → str  (top query string today, or "")
-            top_group_id   → int | None
-            top_group_cnt  → int
-            missed_top     → list[dict]
-        """
-        db    = cls._get_db()
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+    settings       = await CosmicBotz.get_settings()
+    revoke_minutes = settings.get("auto_revoke_minutes", 30)
 
-        total_searches = await db.analytics.count_documents({})
-        today_searches = await db.analytics.count_documents({"day": today})
-        today_found    = await db.analytics.count_documents({"day": today, "found": True})
-        today_missed   = await db.analytics.count_documents({"day": today, "found": False})
-        total_found    = await db.analytics.count_documents({"found": True})
-        total_missed   = await db.analytics.count_documents({"found": False})
+    # DM
+    if is_private:
+        if is_privileged:
+            await _handle_filter(bot, message, text, revoke_minutes)
+        elif (len(text) == 1 and text.upper() in ALPHABET) or len(text) >= 2:
+            await _send_join_groups(message)
+        return
 
-        # Top query today
-        top_q_res = await db.analytics.aggregate([
-            {"$match":  {"day": today}},
-            {"$group":  {"_id": "$query", "count": {"$sum": 1}}},
-            {"$sort":   {"count": -1}},
-            {"$limit":  1},
-        ]).to_list(length=1)
-        top_today = top_q_res[0]["_id"] if top_q_res else ""
+    # Group
+    await _handle_filter(bot, message, text, revoke_minutes)
 
-        # Most active group (all-time)
-        top_grp_res = await db.analytics.aggregate([
-            {"$group":  {"_id": "$group_id", "count": {"$sum": 1}}},
-            {"$sort":   {"count": -1}},
-            {"$limit":  1},
-        ]).to_list(length=1)
-        top_group_id  = top_grp_res[0]["_id"]   if top_grp_res else None
-        top_group_cnt = top_grp_res[0]["count"] if top_grp_res else 0
 
-        missed_top = await cls.get_missed_searches(limit=5)
+# ── User taps a title button ──────────────────────────────────────────────────
 
-        return {
-            "total_searches": total_searches,
-            "today_searches": today_searches,
-            "today_found":    today_found,
-            "today_missed":   today_missed,
-            "total_found":    total_found,
-            "total_missed":   total_missed,
-            "hit_rate":       round((total_found / total_searches * 100), 1) if total_searches else 0,
-            "top_today":      top_today,
-            "top_group_id":   top_group_id,
-            "top_group_cnt":  top_group_cnt,
-            "missed_top":     missed_top,
-        }
+@router.callback_query(F.data.startswith("show_"))
+async def cb_show_title(
+    call: CallbackQuery,
+    bot: Bot,
+    is_admin: bool = False,
+    is_owner: bool = False,
+    **kwargs
+):
+    await call.answer()
+
+    filter_id = call.data.split("_", 1)[1]
+    chat_id   = call.message.chat.id
+    is_group  = call.message.chat.type in ("group", "supergroup")
+    is_private = call.message.chat.type == ChatType.PRIVATE
+
+    if is_private and not (is_admin or is_owner):
+        await call.answer("📢 This works inside a verified group only!", show_alert=True)
+        return
+
+    item = await CosmicBotz.get_filter_by_id(filter_id)
+    if not item:
+        await call.answer("⚠️ Title not found.", show_alert=True)
+        return
+
+    if not item.get("log_channel_id") or not item.get("message_id"):
+        await call.answer("⚠️ Not posted yet. Ask admin to re-add it.", show_alert=True)
+        return
+
+    settings       = await CosmicBotz.get_settings()
+    revoke_minutes = settings.get("auto_revoke_minutes", 30)
+
+    # Delete index message immediately
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+    await _send_post(bot, item, chat_id, revoke_minutes, call.message.message_id)
+
+
+@router.callback_query(F.data.startswith("nf_"))
+async def cb_not_found(call: CallbackQuery, **kwargs):
+    await call.answer("⚠️ Title not available yet.", show_alert=True)
