@@ -21,7 +21,7 @@ from handlers import group
 from utils.scheduler import setup_scheduler, stop_scheduler
 from datetime import datetime
 
-START_TIME = datetime.utcnow()  # for /uptime
+# START_TIME = datetime.utcnow()  # for /uptime
 
 PORT         = int(os.environ.get("PORT", 8080))
 WEBHOOK_URL  = os.environ.get("WEBHOOK_URL", "")
