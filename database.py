@@ -40,10 +40,6 @@ class Database:
 
         await self._ensure_indexes()
 
-        # Initialise analytics module with the same DB handle
-        from analytics import Analytics
-        Analytics.init(self._db)
-
     async def close(self):
         if self._client:
             self._client.close()
@@ -63,12 +59,10 @@ class Database:
         await db.filters.create_index([("acronym",      ASCENDING)])
         await db.slots.create_index(  [("owner_id",     ASCENDING)])
         await db.groups.create_index( [("group_id",     ASCENDING)], unique=True)
-
-        # Analytics indexes now owned by analytics.py
-        from analytics import Analytics
-        Analytics.init(self._db)
-        await Analytics.ensure_indexes()
-
+        await db.search_logs.create_index([("count",  -1)])
+        await db.search_logs.create_index([("query",  ASCENDING)], unique=True)
+        await db.analytics.create_index(  [("day",    ASCENDING)])
+        await db.analytics.create_index(  [("found",  ASCENDING)])
         logger.info("✅ MongoDB indexes ensured")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -117,14 +111,13 @@ class Database:
 
     async def search_title(self, query: str) -> list:
         """
-        Fuzzy title search with 7-strategy pipeline.
-        S1  exact phrase (word-boundary)
-        S2  original query exact
-        S3  acronym lookup
-        S4  all words present (any order)
-        S5  longest-word fallback
-        S6  prefix fallback
-        S7  rapidfuzz token_set_ratio ≥ 70 % (last resort)
+        Fuzzy title search:
+        - Single short words (≤3 chars) only match if they are a known abbreviation
+          e.g. "hi", "ok", "hey" → no results (not abbr)
+          e.g. "jjk" → Jujutsu Kaisen, "aot" → Attack on Titan
+        - Acronym matching: "JJK" / "jjk" checked against title initials
+        - Multi-word: all words must appear in title (any order)
+        - Fallback: longest word if 2+ words typed
         """
         import re, unicodedata
 
@@ -138,9 +131,10 @@ class Database:
         norm_q_raw = _normalize(query.strip())
         q_lower    = norm_q_raw
 
-        # ── Abbreviation expansion ────────────────────────────────────────────
+        # ── Abbreviation expansion (DB custom only) ──────────────────────────
         ABBR = await self.get_abbr_map()
 
+        # Expand full query as abbreviation
         if q_lower in ABBR:
             norm_q = _normalize(ABBR[q_lower])
         else:
@@ -161,19 +155,19 @@ class Database:
 
         words = [w for w in norm_q.split() if len(w) >= 2]
 
-        # Guard: block 1-2 char queries that aren't abbreviations
+        # ── GUARD: block 1-2 char queries that aren't abbreviations ────────
         orig_words = norm_q_raw.split()
         if len(orig_words) == 1 and len(norm_q_raw) <= 2 and norm_q_raw not in ABBR:
             return []
 
-        # S1: Exact phrase (word-boundary)
+        # ── Strategy 1: Exact phrase match (word boundary aware) ─────────────
         try:
             pattern = r"(?i)\b" + re.escape(norm_q) + r"\b"
             await _add(db.filters.find({"title_normalized": {"$regex": pattern}}))
         except Exception:
             pass
 
-        # S2: Original query exact match
+        # ── Strategy 2: Original query exact match ───────────────────────────
         if not results:
             try:
                 pattern = r"(?i)\b" + re.escape(query.strip()) + r"\b"
@@ -181,14 +175,14 @@ class Database:
             except Exception:
                 pass
 
-        # S3: Acronym match (indexed)
+        # ── Strategy 3: Acronym match — fast indexed DB lookup ─────────────
         if not results and len(norm_q_raw) >= 2 and " " not in norm_q_raw:
             try:
                 await _add(db.filters.find({"acronym": norm_q_raw}))
             except Exception:
                 pass
 
-        # S4: All words present (any order), 2+ words only
+        # ── Strategy 4: All words present (any order), 2+ words only ─────────
         if len(words) >= 2 and len(results) < 5:
             try:
                 wf = [{"title_normalized": {"$regex": r"(?i)\b" + re.escape(w) + r"\b"}} for w in words]
@@ -196,7 +190,7 @@ class Database:
             except Exception:
                 pass
 
-        # S5: Longest-word fallback — 2+ word queries only
+        # ── Strategy 5: Longest-word fallback — 2+ word queries only ─────────
         if not results and len(words) >= 2:
             longest = max(words, key=len)
             if len(longest) >= 4:
@@ -205,7 +199,7 @@ class Database:
                 except Exception:
                     pass
 
-        # S6: Prefix fallback — "food war" → "Food Wars"
+        # ── Strategy 6: Prefix fallback — typos like "food war" → "Food Wars" ─
         if not results:
             for w in sorted(words, key=len, reverse=True):
                 if len(w) >= 4:
@@ -216,7 +210,7 @@ class Database:
                     except Exception:
                         pass
 
-        # S7: Fuzzy — last resort for scrambled typos ("dimon sleyr" → "Demon Slayer")
+        # ── Strategy 7: Fuzzy match — last resort for scrambled typos ─────────
         if not results:
             try:
                 from rapidfuzz import fuzz
@@ -278,29 +272,6 @@ class Database:
         return sorted(await db.filters.distinct("first_letter"))
 
     # ══════════════════════════════════════════════════════════════════════════
-    # STATS  (content index counts)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    async def get_stats(self) -> dict:
-        db = self.db()
-        anime  = await db.filters.count_documents({"media_type": "anime"})
-        tvshow = await db.filters.count_documents({"media_type": "tvshow"})
-        movie  = await db.filters.count_documents({"media_type": "movie"})
-        total  = await db.filters.count_documents({})
-        groups          = await db.groups.count_documents({})
-        verified_groups = await db.groups.count_documents({"verified": True})
-        slots           = await db.slots.count_documents({})
-        return {
-            "anime":           anime,
-            "tvshow":          tvshow,
-            "movie":           movie,
-            "total":           total,
-            "groups":          groups,
-            "verified_groups": verified_groups,
-            "slots":           slots,
-        }
-
-    # ══════════════════════════════════════════════════════════════════════════
     # SLOTS  (channel posting slots)
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -335,10 +306,6 @@ class Database:
     async def get_slots(self, owner_id: int) -> list:
         db = self.db()
         return await db.slots.find({"owner_id": owner_id}).to_list(length=50)
-
-    async def get_slots_all(self) -> list:
-        db = self.db()
-        return await db.slots.find({}).to_list(length=50)
 
     async def get_slot(self, channel_id: int) -> dict | None:
         return await self.db().slots.find_one({"channel_id": channel_id})
@@ -472,6 +439,7 @@ class Database:
     # ══════════════════════════════════════════════════════════════════════════
 
     async def get_abbr_map(self) -> dict:
+        """Return all custom abbreviations as {abbr: full_title}."""
         db   = self.db()
         docs = await db.abbreviations.find().to_list(length=500)
         return {d["abbr"]: d["full"] for d in docs}
@@ -488,6 +456,125 @@ class Database:
         db     = self.db()
         result = await db.abbreviations.delete_one({"abbr": abbr.lower()})
         return result.deleted_count > 0
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SEARCH LOGS  (missed searches + analytics)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def log_missed_search(self, query: str, user_id: int, group_id: int):
+        """Record a search that returned no results."""
+        db  = self.db()
+        now = datetime.utcnow()
+        await db.search_logs.update_one(
+            {"query": query.lower().strip()},
+            {
+                "$inc":  {"count": 1},
+                "$set":  {"last_searched": now},
+                "$setOnInsert": {"first_searched": now, "fulfilled": False},
+                "$addToSet": {"groups": group_id}
+            },
+            upsert=True
+        )
+
+    async def log_search(self, query: str, user_id: int, group_id: int, found: bool):
+        """Record every search for analytics."""
+        db  = self.db()
+        now = datetime.utcnow()
+        await db.analytics.insert_one({
+            "query":    query.lower().strip(),
+            "user_id":  user_id,
+            "group_id": group_id,
+            "found":    found,
+            "date":     now,
+            "day":      now.strftime("%Y-%m-%d")
+        })
+
+    async def get_missed_searches(self, limit: int = 10) -> list:
+        """Top unmatched searches sorted by count."""
+        db = self.db()
+        cursor = db.search_logs.find(
+            {"fulfilled": False}
+        ).sort("count", -1).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def mark_fulfilled(self, query: str):
+        """Mark a missed search as fulfilled after content is added."""
+        await self.db().search_logs.update_one(
+            {"query": query.lower().strip()},
+            {"$set": {"fulfilled": True}}
+        )
+
+    async def get_analytics(self) -> dict:
+        """Aggregated analytics for /stats."""
+        db    = self.db()
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+
+        total_searches = await db.analytics.count_documents({})
+        today_searches = await db.analytics.count_documents({"day": today})
+        today_found    = await db.analytics.count_documents({"day": today, "found": True})
+        today_missed   = await db.analytics.count_documents({"day": today, "found": False})
+        total_found    = await db.analytics.count_documents({"found": True})
+        total_missed   = await db.analytics.count_documents({"found": False})
+
+        top_q_res = await db.analytics.aggregate([
+            {"$match":  {"day": today}},
+            {"$group":  {"_id": "$query", "count": {"$sum": 1}}},
+            {"$sort":   {"count": -1}},
+            {"$limit":  1},
+        ]).to_list(length=1)
+        top_today = top_q_res[0]["_id"] if top_q_res else ""
+
+        top_grp_res = await db.analytics.aggregate([
+            {"$group":  {"_id": "$group_id", "count": {"$sum": 1}}},
+            {"$sort":   {"count": -1}},
+            {"$limit":  1},
+        ]).to_list(length=1)
+        top_group_id  = top_grp_res[0]["_id"]   if top_grp_res else None
+        top_group_cnt = top_grp_res[0]["count"] if top_grp_res else 0
+
+        return {
+            "total_searches": total_searches,
+            "today_searches": today_searches,
+            "today_found":    today_found,
+            "today_missed":   today_missed,
+            "total_found":    total_found,
+            "total_missed":   total_missed,
+            "hit_rate":       round((total_found / total_searches * 100), 1) if total_searches else 0,
+            "top_today":      top_today,
+            "top_group_id":   top_group_id,
+            "top_group_cnt":  top_group_cnt,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STATS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def get_stats(self) -> dict:
+        db = self.db()
+        anime  = await db.filters.count_documents({"media_type": "anime"})
+        tvshow = await db.filters.count_documents({"media_type": "tvshow"})
+        movie  = await db.filters.count_documents({"media_type": "movie"})
+        total  = await db.filters.count_documents({})
+        groups          = await db.groups.count_documents({})
+        verified_groups = await db.groups.count_documents({"verified": True})
+        slots           = await db.slots.count_documents({})
+        return {
+            "anime":           anime,
+            "tvshow":          tvshow,
+            "movie":           movie,
+            "total":           total,
+            "groups":          groups,
+            "verified_groups": verified_groups,
+            "slots":           slots,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SLOTS ALL
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def get_slots_all(self) -> list:
+        db = self.db()
+        return await db.slots.find({}).to_list(length=50)
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
