@@ -1,11 +1,6 @@
 """
 database.py — Single database module for Auto Filter CosmicBotz.
 
-Usage anywhere in the bot:
-    from database import CosmicBotz
-    await CosmicBotz.connect()
-    await CosmicBotz.add_filter(data)
-    ...
 """
 
 from motor.motor_asyncio import AsyncIOMotorClient
