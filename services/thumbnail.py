@@ -1,6 +1,5 @@
 """
 Thumbnail Processor — Website streaming style
-
 """
 
 import io
