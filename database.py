@@ -215,7 +215,7 @@ class Database:
             try:
                 from rapidfuzz import fuzz
                 all_docs  = await db.filters.find({}, {"title_normalized": 1, "title": 1}).to_list(length=2000)
-                threshold = 70
+                threshold = 60
                 scored    = []
                 for doc in all_docs:
                     t_norm = doc.get("title_normalized", "")
