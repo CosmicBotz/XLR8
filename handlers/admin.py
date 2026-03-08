@@ -6,7 +6,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ChatType
 
 from database import CosmicBotz
-from analytics import Analytics
 from middlewares.auth import owner_only, admin_only, dm_only
 from keyboards.inline import slot_list_keyboard, admin_list_keyboard
 
@@ -605,7 +604,7 @@ async def cmd_delabbr(message: Message, **kwargs):
 # ── /filters ──────────────────────────────────────────────────────────────────
 
 @router.message(Command("filters"))
-@admin_only
+@owner_only
 async def cmd_filters(message: Message, **kwargs):
     from database import CosmicBotz as _db
     from aiogram.types import BufferedInputFile
@@ -657,7 +656,7 @@ async def cmd_filters(message: Message, **kwargs):
 @router.message(Command("missed"))
 @owner_only
 async def cmd_missed(message: Message, **kwargs):
-    results = await Analytics.get_missed_searches(limit=15)
+    results = await CosmicBotz.get_missed_searches(limit=15)
     if not results:
         await message.answer("✅ No missed searches yet — everything found!")
         return
