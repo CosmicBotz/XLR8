@@ -6,11 +6,13 @@ Filter handler — letter index + title search.
 - DM: owner/admin get full filter, regular users get join group message
 - Silent on no results
 """
+
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatType
 
 from database import CosmicBotz
+from analytics import Analytics
 from services.caption import build_index_caption
 from services.link_gen import create_invite_link
 from keyboards.inline import index_results_keyboard, watch_download_keyboard, join_groups_keyboard
@@ -37,7 +39,7 @@ async def _send_post(
     item: dict,
     chat_id: int,
     revoke_minutes: int,
-    user_msg_id: int      # deleted together with post after timer
+    user_msg_id: int
 ):
     slot_channel_id = item.get("slot_channel_id") or 0
     invite_link     = None
@@ -73,7 +75,6 @@ async def _send_post(
             pass
         return
 
-    # Delete user msg + bot post together after timer
     await task_manager.schedule(
         _delete_messages(bot, chat_id, [sent.message_id, user_msg_id]),
         delay=revoke_minutes * 60
@@ -94,7 +95,7 @@ async def _send_join_groups(message: Message):
         await message.answer("📢 Use me inside a verified group to get content!")
 
 
-# ── Filter core logic (shared by group and privileged DM) ────────────────────
+# ── Filter core logic ─────────────────────────────────────────────────────────
 
 async def _handle_filter(
     bot: Bot,
@@ -124,15 +125,15 @@ async def _handle_filter(
 
     # Multi-char → search
     if len(text) >= 2:
-        uid      = message.from_user.id if message.from_user else 0
-        gid      = message.chat.id
-        results  = await CosmicBotz.search_title(text)
+        uid     = message.from_user.id if message.from_user else 0
+        gid     = message.chat.id
+        results = await CosmicBotz.search_title(text)
 
         if not results:
-            await CosmicBotz.log_missed_search(text, uid, gid)
+            await Analytics.log_missed_search(text, uid, gid)
             return
 
-        await CosmicBotz.log_search(text, uid, gid, found=True)
+        await Analytics.log_search(text, uid, gid, found=True)
 
         if len(results) == 1:
             item = results[0]
@@ -154,9 +155,9 @@ async def _handle_filter(
 async def handle_text(
     message: Message,
     bot: Bot,
-    is_group: bool     = False,
-    is_admin: bool     = False,
-    is_owner: bool     = False,
+    is_group: bool       = False,
+    is_admin: bool       = False,
+    is_owner: bool       = False,
     group_verified: bool = True,
     **kwargs
 ):
@@ -173,7 +174,6 @@ async def handle_text(
     settings       = await CosmicBotz.get_settings()
     revoke_minutes = settings.get("auto_revoke_minutes", 30)
 
-    # DM
     if is_private:
         if is_privileged:
             await _handle_filter(bot, message, text, revoke_minutes)
@@ -181,7 +181,6 @@ async def handle_text(
             await _send_join_groups(message)
         return
 
-    # Group
     await _handle_filter(bot, message, text, revoke_minutes)
 
 
@@ -197,9 +196,8 @@ async def cb_show_title(
 ):
     await call.answer()
 
-    filter_id = call.data.split("_", 1)[1]
-    chat_id   = call.message.chat.id
-    is_group  = call.message.chat.type in ("group", "supergroup")
+    filter_id  = call.data.split("_", 1)[1]
+    chat_id    = call.message.chat.id
     is_private = call.message.chat.type == ChatType.PRIVATE
 
     if is_private and not (is_admin or is_owner):
@@ -218,7 +216,6 @@ async def cb_show_title(
     settings       = await CosmicBotz.get_settings()
     revoke_minutes = settings.get("auto_revoke_minutes", 30)
 
-    # Delete index message immediately
     try:
         await call.message.delete()
     except Exception:
