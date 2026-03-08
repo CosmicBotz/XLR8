@@ -5,7 +5,7 @@ from aiogram.enums import ChatType
 
 from database import CosmicBotz
 from middlewares.auth import owner_only, admin_only
-from keyboards.inline import quick_add_slot_keyboard
+from keyboards.inline import quick_add_slot_keyboard, quick_tmdb_keyboard
 from config import OWNER_ID
 import logging
 
@@ -231,27 +231,32 @@ async def cmd_list_groups(message: Message, **kwargs):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("qslot_"))
-async def cb_quick_slot(call: CallbackQuery, bot: Bot, is_owner: bool = False, is_admin: bool = False, **kwargs):
+@router.callback_query(F.data == "qslot_ignore")
+async def cb_qslot_ignore(call: CallbackQuery, **kwargs):
+    await call.answer()
+    await call.message.edit_text("❌ Channel ignored.")
+
+
+@router.callback_query(F.data == "qslot_cancel")
+async def cb_qslot_cancel(call: CallbackQuery, **kwargs):
+    await call.answer()
+    await call.message.edit_text("❌ Cancelled.")
+
+
+@router.callback_query(F.data.startswith("qslot_add|"))
+async def cb_quick_slot_add(call: CallbackQuery, bot: Bot, is_owner: bool = False, is_admin: bool = False, **kwargs):
     await call.answer()
 
     if not (is_owner or is_admin):
         await call.answer("⛔ Not allowed.", show_alert=True)
         return
 
-    if call.data == "qslot_ignore":
-        await call.message.edit_text("❌ Channel ignored.")
-        return
-
     # qslot_add|channel_id|name_truncated
-    parts = call.data.split("|", 2)
-    if len(parts) < 2:
-        await call.message.edit_text("⚠️ Invalid data.")
-        return
-
+    parts        = call.data.split("|", 2)
     channel_id   = int(parts[1])
     channel_name = parts[2] if len(parts) > 2 else str(channel_id)
 
+    # 1. Save slot
     ok, msg = await CosmicBotz.add_slot(
         owner_id=call.from_user.id,
         channel_id=channel_id,
@@ -259,11 +264,91 @@ async def cb_quick_slot(call: CallbackQuery, bot: Bot, is_owner: bool = False, i
         slot_name=channel_name
     )
 
+    if not ok:
+        await call.message.edit_text("⚠️ " + msg)
+        return
+
+    # 2. Clean name and search TMDB
+    from services.content import clean_channel_name
+    from services.tmdb import search_tmdb
+
+    query = clean_channel_name(channel_name)
+    await call.message.edit_text(
+        "✅ Slot saved!\n\n"
+        "🔍 Searching TMDB for: <b>" + query + "</b>...",
+        parse_mode="HTML"
+    )
+
+    try:
+        results = await search_tmdb(query, "multi")
+    except Exception as e:
+        await call.message.edit_text(
+            "✅ Slot saved!\n\n"
+            "⚠️ TMDB search failed: " + str(e) + "\n"
+            "Use /addcontent to add content manually.",
+            parse_mode="HTML"
+        )
+        return
+
+    if not results:
+        await call.message.edit_text(
+            "✅ Slot saved!\n\n"
+            "❌ No TMDB results for <b>" + query + "</b>\n"
+            "Use /addcontent to add content manually.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 3. Show TMDB results
+    await call.message.edit_text(
+        "✅ Slot saved!\n\n"
+        "🎬 Pick the correct title for <b>" + channel_name + "</b>:",
+        reply_markup=quick_tmdb_keyboard(results, channel_id),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("qslot_tmdb|"))
+async def cb_quick_slot_tmdb(call: CallbackQuery, bot: Bot, is_owner: bool = False, is_admin: bool = False, **kwargs):
+    await call.answer("⏳ Posting content...")
+
+    if not (is_owner or is_admin):
+        await call.answer("⛔ Not allowed.", show_alert=True)
+        return
+
+    # qslot_tmdb|channel_id|tmdb_id|media_type
+    parts      = call.data.split("|")
+    channel_id = int(parts[1])
+    tmdb_id    = int(parts[2])
+    tmdb_type  = parts[3]  # "tv" or "movie"
+
+    await call.message.edit_text("⏳ Fetching details and posting...")
+
+    from services.tmdb import get_tv_details, get_movie_details, build_media_data
+    from services.content import post_content
+
+    try:
+        if tmdb_type == "movie":
+            details   = await get_movie_details(tmdb_id)
+            media_data = build_media_data(details, "movie")
+        else:
+            details   = await get_tv_details(tmdb_id)
+            # Guess anime vs tvshow from genre (Animation = 16)
+            genre_ids = [g.get("id") for g in details.get("genres", [])]
+            mtype     = "anime" if 16 in genre_ids else "tvshow"
+            media_data = build_media_data(details, mtype)
+    except Exception as e:
+        await call.message.edit_text("❌ TMDB fetch failed: " + str(e))
+        return
+
+    ok, result = await post_content(bot, media_data, channel_id)
+
     if ok:
         await call.message.edit_text(
-            "✅ <b>" + channel_name + "</b> added as a slot!\n\n"
-            "Use /addcontent to post content to this slot.",
+            "✅ <b>" + result + "</b> added to index!\n\n"
+            "📋 Posted to Log Channel with invite link.\n"
+            "Users can now find it by searching.",
             parse_mode="HTML"
         )
     else:
-        await call.message.edit_text("⚠️ " + msg)
+        await call.message.edit_text("❌ " + result)
