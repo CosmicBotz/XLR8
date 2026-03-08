@@ -1,5 +1,6 @@
 """
 Thumbnail Processor — Website streaming style
+
 """
 
 import io
@@ -71,22 +72,26 @@ def _wrap(text: str, font, draw, max_w: int) -> list:
 
 def _draw_text_watermark(canvas: Image.Image, text: str) -> Image.Image:
     """
-    Watermark — top-right clean dark pill, small professional size.
+    Watermark — top-right clean dark pill, same right margin as bottom bar.
     """
     if not text:
         return canvas
-    W, H  = canvas.size
-    font  = _font(22, bold=False)   # smaller, regular weight = cleaner
-    ov    = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od    = ImageDraw.Draw(ov)
-    bbox  = od.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    px, py = 14, 7
-    x = W - tw - px * 2 - 12
-    y = 12
-    # Dark pill — no border, subtle and clean
-    od.rectangle([x, y, x + tw + px * 2, y + th + py * 2], fill=(0, 0, 0, 200))
-    od.text((x + px, y + py), text, font=font, fill=(255, 255, 255, 240))
+    W, H   = canvas.size
+    margin = 20          # same spacing on right as bottom-bar uses
+    font   = _font(18, bold=False)
+    ov     = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od     = ImageDraw.Draw(ov)
+    bbox   = od.textbbox((0, 0), text, font=font)
+    px, py = 10, 5
+    t_left, t_top, t_right, t_bottom = bbox
+    tw = t_right - t_left
+    th = t_bottom - t_top
+    # Anchor from right edge with margin
+    x     = W - tw - px * 2 - margin
+    y     = margin
+    bar_h = th + py * 2
+    od.rectangle([x, y, x + tw + px * 2, y + bar_h], fill=(0, 0, 0, 185))
+    od.text((x + px, y + py - t_top), text, font=font, fill=(255, 255, 255, 230))
     return Image.alpha_composite(canvas.convert("RGBA"), ov)
 
 
@@ -97,35 +102,42 @@ def _draw_logo_watermark(
 ) -> Image.Image:
     """Logo image top-right — Anime Metrix style (red bar + logo + optional text)."""
     W, H   = canvas.size
-    logo_h = 52
+    logo_h = 42          # smaller bar overall
     logo_w = int(logo.width * logo_h / logo.height)
     logo   = logo.resize((logo_w, logo_h), Image.LANCZOS)
     ov     = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     od     = ImageDraw.Draw(ov)
 
+    margin = 20   # same right/top margin as text watermark
     if text:
-        font        = _font(28)
+        font        = _font(22)
         bbox        = od.textbbox((0, 0), text, font=font)
-        tw, th      = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        pad         = 12
-        total_w     = logo_w + 10 + tw + pad * 2 + 4
-        x, y        = W - total_w - 12, 14
+        # Use actual bbox coords for pixel-perfect centering
+        t_left, t_top, t_right, t_bottom = bbox
+        tw = t_right  - t_left
+        th = t_bottom - t_top
+        pad         = 8
+        total_w     = logo_w + 8 + tw + pad * 2 + 4
+        x           = W - total_w - margin
+        y           = margin
         h           = max(logo_h, th) + pad * 2
         # Dark bg pill
-        od.rectangle([x,     y, x + total_w, y + h], fill=(10, 10, 10, 190))
+        od.rectangle([x,     y, x + total_w, y + h], fill=(10, 10, 10, 185))
         # Red accent bar
         od.rectangle([x,     y, x + 4,       y + h], fill=(210, 25, 25, 255))
-        # Logo
+        # Logo — centred vertically in bar
         lx = x + 4 + pad
         ly = y + (h - logo_h) // 2
         ov.paste(logo, (lx, ly), logo)
-        # Text
-        od.text((lx + logo_w + 10, y + (h - th) // 2), text, font=font, fill=(255, 255, 255, 255))
+        # Text — subtract bbox top offset so baseline aligns to true centre
+        tx = lx + logo_w + 8
+        ty = y + (h - th) // 2 - t_top
+        od.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
     else:
         # Just logo — small pill top-right
-        x = W - logo_w - 20
-        y = 14
-        od.rectangle([x - 8, y - 6, x + logo_w + 8, y + logo_h + 6], fill=(10, 10, 10, 180))
+        x = W - logo_w - margin
+        y = margin
+        od.rectangle([x - 6, y - 4, x + logo_w + 6, y + logo_h + 4], fill=(10, 10, 10, 180))
         ov.paste(logo, (x, y), logo)
 
     return Image.alpha_composite(canvas.convert("RGBA"), ov)
