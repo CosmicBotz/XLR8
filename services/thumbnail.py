@@ -76,7 +76,7 @@ def _draw_text_watermark(canvas: Image.Image, text: str) -> Image.Image:
     if not text:
         return canvas
     W, H   = canvas.size
-    margin = 20          # same spacing on right as bottom-bar uses
+    margin = 32          # matches episode card right margin
     font   = _font(18, bold=False)
     ov     = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     od     = ImageDraw.Draw(ov)
@@ -107,7 +107,7 @@ def _draw_logo_watermark(
     ov     = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     od     = ImageDraw.Draw(ov)
 
-    margin = 20   # same right/top margin as text watermark
+    margin = 32   # matches episode card right margin
     if text:
         font        = _font(22)
         bbox        = od.textbbox((0, 0), text, font=font)
