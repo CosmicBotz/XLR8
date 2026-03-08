@@ -1,4 +1,5 @@
 import random
+from datetime import datetime
 from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import Command, CommandStart
@@ -7,6 +8,8 @@ from aiogram.enums import ChatType
 from database import CosmicBotz
 from analytics import Analytics
 from config import START_PICS
+
+START_TIME = datetime.utcnow()  # set when module loads
 
 router = Router()
 
@@ -219,8 +222,6 @@ async def cmd_ping(message: Message, **kwargs):
 
 @router.message(Command("uptime"))
 async def cmd_uptime(message: Message, **kwargs):
-    from bot import START_TIME
-    from datetime import datetime
     delta   = datetime.utcnow() - START_TIME
     days    = delta.days
     hours   = delta.seconds // 3600
