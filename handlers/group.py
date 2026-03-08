@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-
 # ── Bot promoted to admin in a CHANNEL ───────────────────────────────────────
 
 @router.my_chat_member()
 async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
     """Fires when bot's status changes in any chat."""
-    chat     = event.chat
-    new_stat = event.new_chat_member.status
-    old_stat = event.old_chat_member.status
+    chat      = event.chat
+    new_stat  = event.new_chat_member.status
+    old_stat  = event.old_chat_member.status
+    added_by  = event.from_user.id if event.from_user else None
 
     # Only care about channel promotions
     if chat.type != ChatType.CHANNEL:
@@ -31,18 +31,95 @@ async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
     if old_stat == "administrator":
         return  # already was admin, ignore
 
-    logger.info(f"Bot promoted to admin in channel: {chat.title} ({chat.id})")
+    logger.info(f"Bot promoted to admin in channel: {chat.title} ({chat.id}) by {added_by}")
 
-    # Notify owner
+    # ── Owner added the bot → auto add slot + search TMDB immediately ────────
+    if added_by == OWNER_ID:
+        from services.content import clean_channel_name
+        from services.tmdb import search_tmdb
+
+        ok, msg = await CosmicBotz.add_slot(
+            owner_id=OWNER_ID,
+            channel_id=chat.id,
+            channel_name=chat.title or str(chat.id),
+            slot_name=chat.title or str(chat.id)
+        )
+
+        if not ok:
+            try:
+                await bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(
+                        "📡 <b>Channel detected</b> — <b>" + (chat.title or str(chat.id)) + "</b>\n\n"
+                        "⚠️ Slot not added: " + msg
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+
+        query = clean_channel_name(chat.title or "")
+
+        try:
+            results = await search_tmdb(query, "multi")
+        except Exception as e:
+            try:
+                await bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(
+                        "✅ Slot saved for <b>" + (chat.title or str(chat.id)) + "</b>\n\n"
+                        "⚠️ TMDB search failed: " + str(e) + "\n"
+                        "Use /addcontent to add content manually."
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+
+        if not results:
+            try:
+                await bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=(
+                        "✅ Slot saved for <b>" + (chat.title or str(chat.id)) + "</b>\n\n"
+                        "❌ No TMDB results for <b>" + query + "</b>\n"
+                        "Use /addcontent to add content manually."
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+
+        try:
+            await bot.send_message(
+                chat_id=OWNER_ID,
+                text=(
+                    "✅ Slot saved!\n\n"
+                    "🎬 Pick the correct title for <b>" + (chat.title or str(chat.id)) + "</b>:"
+                ),
+                reply_markup=quick_tmdb_keyboard(results, chat.id),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send TMDB picker to owner: {e}")
+
+        return
+
+    # ── Admin or unknown added the bot → ask confirmation as before ───────────
+    notify_text = (
+        "📡 <b>Bot added as admin in a channel!</b>\n\n"
+        "🏷 Channel: <b>" + (chat.title or "Unknown") + "</b>\n"
+        "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
+        "Do you want to add this channel as a content slot?"
+    )
+
     try:
         await bot.send_message(
             chat_id=OWNER_ID,
-            text=(
-                "📡 <b>Bot added as admin in a channel!</b>\n\n"
-                "🏷 Channel: <b>" + (chat.title or "Unknown") + "</b>\n"
-                "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
-                "Do you want to add this channel as a content slot?"
-            ),
+            text=notify_text,
             reply_markup=quick_add_slot_keyboard(chat.id, chat.title or ""),
             parse_mode="HTML"
         )
@@ -56,12 +133,7 @@ async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
             try:
                 await bot.send_message(
                     chat_id=admin_id,
-                    text=(
-                        "📡 <b>Bot added as admin in a channel!</b>\n\n"
-                        "🏷 Channel: <b>" + (chat.title or "Unknown") + "</b>\n"
-                        "🆔 ID: <code>" + str(chat.id) + "</code>\n\n"
-                        "Do you want to add this channel as a content slot?"
-                    ),
+                    text=notify_text,
                     reply_markup=quick_add_slot_keyboard(chat.id, chat.title or ""),
                     parse_mode="HTML"
                 )
@@ -70,8 +142,6 @@ async def bot_channel_admin(event: ChatMemberUpdated, bot: Bot):
     except Exception:
         pass
 
-
-# ── Callback: quick add slot ──────────────────────────────────────────────────
 
 # ── Bot added to group ────────────────────────────────────────────────────────
 
@@ -133,7 +203,6 @@ async def cmd_verify_group(message: Message, bot: Bot, is_admin: bool = False, *
 
     await CosmicBotz.add_group(message.chat.id, message.chat.title, message.from_user.id)
 
-    # Generate permanent invite link for the group
     invite_link = ""
     try:
         link = await bot.create_chat_invite_link(
@@ -231,6 +300,8 @@ async def cmd_list_groups(message: Message, **kwargs):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "qslot_ignore")
 async def cb_qslot_ignore(call: CallbackQuery, **kwargs):
     await call.answer()
@@ -256,7 +327,6 @@ async def cb_quick_slot_add(call: CallbackQuery, bot: Bot, is_owner: bool = Fals
     channel_id   = int(parts[1])
     channel_name = parts[2] if len(parts) > 2 else str(channel_id)
 
-    # 1. Save slot
     ok, msg = await CosmicBotz.add_slot(
         owner_id=call.from_user.id,
         channel_id=channel_id,
@@ -268,7 +338,6 @@ async def cb_quick_slot_add(call: CallbackQuery, bot: Bot, is_owner: bool = Fals
         await call.message.edit_text("⚠️ " + msg)
         return
 
-    # 2. Clean name and search TMDB
     from services.content import clean_channel_name
     from services.tmdb import search_tmdb
 
@@ -299,7 +368,6 @@ async def cb_quick_slot_add(call: CallbackQuery, bot: Bot, is_owner: bool = Fals
         )
         return
 
-    # 3. Show TMDB results
     await call.message.edit_text(
         "✅ Slot saved!\n\n"
         "🎬 Pick the correct title for <b>" + channel_name + "</b>:",
@@ -320,7 +388,7 @@ async def cb_quick_slot_tmdb(call: CallbackQuery, bot: Bot, is_owner: bool = Fal
     parts      = call.data.split("|")
     channel_id = int(parts[1])
     tmdb_id    = int(parts[2])
-    tmdb_type  = parts[3]  # "tv" or "movie"
+    tmdb_type  = parts[3]
 
     await call.message.edit_text("⏳ Fetching details and posting...")
 
@@ -329,11 +397,10 @@ async def cb_quick_slot_tmdb(call: CallbackQuery, bot: Bot, is_owner: bool = Fal
 
     try:
         if tmdb_type == "movie":
-            details   = await get_movie_details(tmdb_id)
+            details    = await get_movie_details(tmdb_id)
             media_data = build_media_data(details, "movie")
         else:
             details   = await get_tv_details(tmdb_id)
-            # Guess anime vs tvshow from genre (Animation = 16)
             genre_ids = [g.get("id") for g in details.get("genres", [])]
             mtype     = "anime" if 16 in genre_ids else "tvshow"
             media_data = build_media_data(details, mtype)
@@ -350,5 +417,18 @@ async def cb_quick_slot_tmdb(call: CallbackQuery, bot: Bot, is_owner: bool = Fal
             "Users can now find it by searching.",
             parse_mode="HTML"
         )
+        try:
+            await bot.send_message(
+                chat_id=OWNER_ID,
+                text=(
+                    "🎉 <b>Filter Added!</b>\n\n"
+                    "📌 Title: <b>" + result + "</b>\n"
+                    "📢 Channel: <code>" + str(channel_id) + "</code>\n\n"
+                    "✅ Users can now search and find this title."
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
     else:
         await call.message.edit_text("❌ " + result)
