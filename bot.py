@@ -12,7 +12,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ROOT)
 os.chdir(_ROOT)
 
-from config import BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID
+from config import BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID, PORT
 from database import CosmicBotz
 from middlewares.auth import AuthMiddleware
 from handlers import start, admin, post
