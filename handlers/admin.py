@@ -605,7 +605,7 @@ async def cmd_delabbr(message: Message, **kwargs):
 # ── /filters ──────────────────────────────────────────────────────────────────
 
 @router.message(Command("filters"))
-@owner_only
+@admin_only
 async def cmd_filters(message: Message, **kwargs):
     from database import CosmicBotz as _db
     from aiogram.types import BufferedInputFile
