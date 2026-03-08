@@ -6,10 +6,9 @@ from aiogram.filters import Command, CommandStart
 from aiogram.enums import ChatType
 
 from database import CosmicBotz
-from analytics import Analytics
 from config import START_PICS
 
-START_TIME = datetime.utcnow()  # set when module loads
+START_TIME = datetime.utcnow()
 
 router = Router()
 
@@ -175,7 +174,7 @@ async def cmd_help(message: Message, is_owner: bool = False, is_admin: bool = Fa
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, **kwargs):
     s = await CosmicBotz.get_stats()
-    a = await Analytics.get_analytics()
+    a = await CosmicBotz.get_analytics()
 
     top_q   = ("<code>" + a["top_today"] + "</code>") if a["top_today"] else "—"
     top_grp = (
