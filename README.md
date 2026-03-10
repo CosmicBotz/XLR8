@@ -10,6 +10,8 @@ A Python webhook service with MongoDB integration and media metadata support.
 - Pillow
 - httpx
 
+[![Better Stack Badge](https://uptime.betterstack.com/status-badges/v1/monitor/2gufa.svg)](https://uptime.betterstack.com/?utm_source=status_badge)
+
 ## Setup
 
 ```bash
