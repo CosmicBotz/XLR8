@@ -20,8 +20,9 @@ from services.caption import build_caption
 from services.thumbnail import build_thumbnail
 from keyboards.inline import (
     tmdb_results_keyboard, media_type_keyboard,
-    confirm_add_keyboard, watch_download_keyboard, slot_list_keyboard
+    confirm_add_keyboard, watch_download_keyboard, slot_list_keyboard,
 )
+import json
 from config import LOG_CHANNEL_ID
 import json
 import unicodedata
@@ -279,3 +280,16 @@ async def cb_cancel_add(call: CallbackQuery, state: FSMContext):
 async def cb_cancel(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text("❌ Cancelled.")
+
+@router.callback_query(F.data.startswith("slotpage_slot_"), AddContentState.select_slot)
+async def cb_slot_page_addcontent(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    parts = call.data.split("_")   # slotpage_slot_<page>
+    page  = int(parts[2])
+    data  = await state.get_data()
+    slots = json.loads(data.get("slots_json", "[]"))
+    if not slots:
+        return
+    await call.message.edit_reply_markup(
+        reply_markup=slot_list_keyboard(slots, page=page, prefix="slot")
+    )
