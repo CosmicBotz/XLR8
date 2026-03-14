@@ -8,6 +8,7 @@ from aiogram.enums import ChatType
 from database import CosmicBotz
 from middlewares.auth import owner_only, admin_only, dm_only
 from keyboards.inline import slot_list_keyboard, admin_list_keyboard
+import json
 
 router = Router()
 
@@ -85,8 +86,8 @@ async def cmd_slots(message: Message, **kwargs):
         await message.answer("📭 No slots configured. Use /addslot to add one.")
         return
     await message.answer(
-        f"📋 <b>Your Slots ({len(slots)})</b>",
-        reply_markup=slot_list_keyboard(slots),
+        f"📋 <b>Your Slots ({len(slots)})</b>\n<i>Tap a slot to remove it.</i>",
+        reply_markup=slot_list_keyboard(slots, page=0, prefix="rmslot"),
         parse_mode="HTML"
     )
 
@@ -674,3 +675,21 @@ async def cmd_missed(message: Message, **kwargs):
 
     lines.append("\n<i>Add content with /addcontent to clear these.</i>")
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+# ── Slot list pagination ──────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("slotpage_"))
+async def cb_slot_page(call: CallbackQuery, **kwargs):
+    await call.answer()
+    parts = call.data.split("_")   # slotpage_<prefix>_<page>
+    if len(parts) < 3 or parts[2] == "noop":
+        return
+    prefix = parts[1]
+    page   = int(parts[2])
+    slots  = await CosmicBotz.get_slots(call.from_user.id)
+    if not slots:
+        await call.message.edit_text("📭 No slots found.")
+        return
+    await call.message.edit_reply_markup(
+        reply_markup=slot_list_keyboard(slots, page=page, prefix=prefix)
+    )
