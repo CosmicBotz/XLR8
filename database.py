@@ -115,9 +115,132 @@ class Database:
         return await cursor.to_list(length=100)
 
     async def search_title(self, query: str) -> list:
-        """Thin DB layer — actual search logic lives in services/search.py."""
-        from services.search import run_search
-        return await run_search(query, self)
+        """
+        Fuzzy title search:
+        - Single short words (≤3 chars) only match if they are a known abbreviation
+          e.g. "hi", "ok", "hey" → no results (not abbr)
+          e.g. "jjk" → Jujutsu Kaisen, "aot" → Attack on Titan
+        - Acronym matching: "JJK" / "jjk" checked against title initials
+        - Multi-word: all words must appear in title (any order)
+        - Fallback: longest word if 2+ words typed
+        """
+        import re, unicodedata
+
+        def _normalize(s: str) -> str:
+            s = unicodedata.normalize("NFD", s)
+            s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+            s = s.lower()
+            s = re.sub(r"[^a-z0-9 ]", " ", s)
+            return re.sub(r"\s+", " ", s).strip()
+
+        norm_q_raw = _normalize(query.strip())
+        q_lower    = norm_q_raw
+
+        # ── Abbreviation expansion (DB custom only) ──────────────────────────
+        ABBR = await self.get_abbr_map()
+
+        # Expand full query as abbreviation
+        if q_lower in ABBR:
+            norm_q = _normalize(ABBR[q_lower])
+        else:
+            tokens   = q_lower.split()
+            expanded = [ABBR.get(t, t) for t in tokens]
+            norm_q   = " ".join(expanded)
+
+        db      = self.db()
+        seen    = set()
+        results = []
+
+        async def _add(cursor):
+            async for doc in cursor:
+                oid = str(doc["_id"])
+                if oid not in seen:
+                    seen.add(oid)
+                    results.append(doc)
+
+        words = [w for w in norm_q.split() if len(w) >= 2]
+
+        # ── GUARD: block 1-2 char queries that aren't abbreviations ────────
+        orig_words = norm_q_raw.split()
+        if len(orig_words) == 1 and len(norm_q_raw) <= 2 and norm_q_raw not in ABBR:
+            return []
+
+        # ── Strategy 1: Exact phrase match (word boundary aware) ─────────────
+        try:
+            pattern = r"(?i)\b" + re.escape(norm_q) + r"\b"
+            await _add(db.filters.find({"title_normalized": {"$regex": pattern}}))
+        except Exception:
+            pass
+
+        # ── Strategy 2: Original query exact match ───────────────────────────
+        if not results:
+            try:
+                pattern = r"(?i)\b" + re.escape(query.strip()) + r"\b"
+                await _add(db.filters.find({"title": {"$regex": pattern}}))
+            except Exception:
+                pass
+
+        # ── Strategy 3: Acronym match — fast indexed DB lookup ─────────────
+        if not results and len(norm_q_raw) >= 2 and " " not in norm_q_raw:
+            try:
+                await _add(db.filters.find({"acronym": norm_q_raw}))
+            except Exception:
+                pass
+
+        # ── Strategy 4: All words present (any order), 2+ words only ─────────
+        if len(words) >= 2 and len(results) < 5:
+            try:
+                wf = [{"title_normalized": {"$regex": r"(?i)\b" + re.escape(w) + r"\b"}} for w in words]
+                await _add(db.filters.find({"$and": wf}))
+            except Exception:
+                pass
+
+        # ── Strategy 5: Longest-word fallback — 2+ word queries only ─────────
+        if not results and len(words) >= 2:
+            longest = max(words, key=len)
+            if len(longest) >= 4:
+                try:
+                    await _add(db.filters.find({"title_normalized": {"$regex": r"(?i)\b" + re.escape(longest) + r"\b"}}))
+                except Exception:
+                    pass
+
+        # ── Strategy 6: Prefix fallback — typos like "food war" → "Food Wars" ─
+        if not results:
+            for w in sorted(words, key=len, reverse=True):
+                if len(w) >= 4:
+                    try:
+                        await _add(db.filters.find({"title_normalized": {"$regex": r"(?i)\b" + re.escape(w)}}))
+                        if results:
+                            break
+                    except Exception:
+                        pass
+
+        # ── Strategy 7: Fuzzy match — last resort for scrambled typos ─────────
+        if not results:
+            try:
+                from rapidfuzz import fuzz
+                all_docs  = await db.filters.find({}, {"title_normalized": 1, "title": 1}).to_list(length=2000)
+                threshold = 70
+                scored    = []
+                for doc in all_docs:
+                    t_norm = doc.get("title_normalized", "")
+                    score  = fuzz.token_set_ratio(norm_q, t_norm)
+                    if score >= threshold:
+                        scored.append((score, doc))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                for score, doc in scored[:5]:
+                    oid = str(doc["_id"])
+                    if oid not in seen:
+                        seen.add(oid)
+                        full = await db.filters.find_one({"_id": doc["_id"]})
+                        if full:
+                            results.append(full)
+            except ImportError:
+                pass
+            except Exception:
+                pass
+
+        return sorted(results, key=lambda x: x.get("title", ""))[:20]
 
     async def get_filter_by_id(self, filter_id: str) -> dict | None:
         db = self.db()
@@ -178,16 +301,18 @@ class Database:
         })
         return True, "Slot added."
 
-    async def remove_slot(self, owner_id: int, channel_id: int) -> bool:
+    async def remove_slot(self, owner_id: int, channel_id: int, is_owner: bool = False) -> bool:
         db = self.db()
-        result = await db.slots.delete_one(
-            {"owner_id": owner_id, "channel_id": channel_id}
-        )
+        query = {"channel_id": channel_id}
+        if not is_owner:
+            query["owner_id"] = owner_id
+        result = await db.slots.delete_one(query)
         return result.deleted_count > 0
 
-    async def get_slots(self, owner_id: int) -> list:
+    async def get_slots(self, owner_id: int, is_owner: bool = False) -> list:
         db = self.db()
-        return await db.slots.find({"owner_id": owner_id}).to_list(length=None)
+        query = {} if is_owner else {"owner_id": owner_id}
+        return await db.slots.find(query).to_list(length=None)
 
     async def get_slot(self, channel_id: int) -> dict | None:
         return await self.db().slots.find_one({"channel_id": channel_id})
@@ -237,7 +362,6 @@ class Database:
         }
         if not doc:
             return defaults
-        # Fill missing keys with defaults
         for k, v in defaults.items():
             doc.setdefault(k, v)
         return doc
@@ -255,7 +379,6 @@ class Database:
     # ══════════════════════════════════════════════════════════════════════════
 
     async def add_group(self, group_id: int, group_name: str, added_by: int) -> bool:
-        """Register a new group as pending. Returns False if already exists."""
         db = self.db()
         if await db.groups.find_one({"group_id": group_id}):
             return False
@@ -305,7 +428,6 @@ class Database:
         return await self.db().groups.find_one({"group_id": group_id})
 
     async def get_verified_group_links(self) -> list:
-        """Return list of verified groups that have invite links stored."""
         db = self.db()
         cursor = db.groups.find({"verified": True, "invite_link": {"$ne": ""}})
         return await cursor.to_list(length=50)
@@ -391,46 +513,43 @@ class Database:
 
     async def get_analytics(self) -> dict:
         """Aggregated analytics for /stats."""
-        db  = self.db()
-        now = datetime.utcnow()
-        today = now.strftime("%Y-%m-%d")
+        db    = self.db()
+        today = datetime.utcnow().strftime("%Y-%m-%d")
 
         total_searches = await db.analytics.count_documents({})
         today_searches = await db.analytics.count_documents({"day": today})
         today_found    = await db.analytics.count_documents({"day": today, "found": True})
         today_missed   = await db.analytics.count_documents({"day": today, "found": False})
+        total_found    = await db.analytics.count_documents({"found": True})
+        total_missed   = await db.analytics.count_documents({"found": False})
 
-        # Most searched today
-        pipeline = [
-            {"$match": {"day": today}},
-            {"$group": {"_id": "$query", "count": {"$sum": 1}}},
-            {"$sort":  {"count": -1}},
-            {"$limit": 1}
-        ]
-        top_cursor = db.analytics.aggregate(pipeline)
-        top_docs   = await top_cursor.to_list(length=1)
-        top_today  = top_docs[0]["_id"] if top_docs else None
+        top_q_res = await db.analytics.aggregate([
+            {"$match":  {"day": today}},
+            {"$group":  {"_id": "$query", "count": {"$sum": 1}}},
+            {"$sort":   {"count": -1}},
+            {"$limit":  1},
+        ]).to_list(length=1)
+        top_today = top_q_res[0]["_id"] if top_q_res else ""
 
-        # Most active group today
-        pipeline2 = [
-            {"$match": {"day": today}},
-            {"$group": {"_id": "$group_id", "count": {"$sum": 1}}},
-            {"$sort":  {"count": -1}},
-            {"$limit": 1}
-        ]
-        grp_cursor  = db.analytics.aggregate(pipeline2)
-        grp_docs    = await grp_cursor.to_list(length=1)
-        top_group   = grp_docs[0]["_id"] if grp_docs else None
-        top_grp_cnt = grp_docs[0]["count"] if grp_docs else 0
+        top_grp_res = await db.analytics.aggregate([
+            {"$group":  {"_id": "$group_id", "count": {"$sum": 1}}},
+            {"$sort":   {"count": -1}},
+            {"$limit":  1},
+        ]).to_list(length=1)
+        top_group_id  = top_grp_res[0]["_id"]   if top_grp_res else None
+        top_group_cnt = top_grp_res[0]["count"] if top_grp_res else 0
 
         return {
             "total_searches": total_searches,
             "today_searches": today_searches,
             "today_found":    today_found,
             "today_missed":   today_missed,
+            "total_found":    total_found,
+            "total_missed":   total_missed,
+            "hit_rate":       round((total_found / total_searches * 100), 1) if total_searches else 0,
             "top_today":      top_today,
-            "top_group_id":   top_group,
-            "top_group_cnt":  top_grp_cnt,
+            "top_group_id":   top_group_id,
+            "top_group_cnt":  top_group_cnt,
         }
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -439,21 +558,31 @@ class Database:
 
     async def get_stats(self) -> dict:
         db = self.db()
+        anime  = await db.filters.count_documents({"media_type": "anime"})
+        tvshow = await db.filters.count_documents({"media_type": "tvshow"})
+        movie  = await db.filters.count_documents({"media_type": "movie"})
+        total  = await db.filters.count_documents({})
+        groups          = await db.groups.count_documents({})
+        verified_groups = await db.groups.count_documents({"verified": True})
+        slots           = await db.slots.count_documents({})
         return {
-            "total":           await db.filters.count_documents({}),
-            "anime":           await db.filters.count_documents({"media_type": "anime"}),
-            "tvshow":          await db.filters.count_documents({"media_type": "tvshow"}),
-            "movie":           await db.filters.count_documents({"media_type": "movie"}),
-            "slots":           await db.slots.count_documents({}),
-            "groups":          await db.groups.count_documents({}),
-            "verified_groups": await db.groups.count_documents({"verified": True}),
+            "anime":           anime,
+            "tvshow":          tvshow,
+            "movie":           movie,
+            "total":           total,
+            "groups":          groups,
+            "verified_groups": verified_groups,
+            "slots":           slots,
         }
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # SLOTS ALL
+    # ══════════════════════════════════════════════════════════════════════════
+
     async def get_slots_all(self) -> list:
-        """Get all slots — used for invite link generation."""
         db = self.db()
-        return await db.slots.find({}).to_list(length=None)
+        return await db.slots.find({}).to_list(length=50)
 
 
-# ── Singleton instance ────────────────────────────────────────────────────────
+# ── Singleton ──────────────────────────────────────────────────────────────────
 CosmicBotz = Database()
