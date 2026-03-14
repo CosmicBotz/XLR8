@@ -80,8 +80,8 @@ async def slot_got_name(message: Message, state: FSMContext):
 
 @router.message(Command("slots"))
 @owner_only
-async def cmd_slots(message: Message, **kwargs):
-    slots = await CosmicBotz.get_slots(message.from_user.id)
+async def cmd_slots(message: Message, is_owner: bool = False, **kwargs):
+    slots = await CosmicBotz.get_slots(message.from_user.id, is_owner=is_owner)
     if not slots:
         await message.answer("📭 No slots configured. Use /addslot to add one.")
         return
@@ -96,7 +96,7 @@ async def cmd_slots(message: Message, **kwargs):
 
 @router.message(Command("removeslot"))
 @owner_only
-async def cmd_removeslot(message: Message, **kwargs):
+async def cmd_removeslot(message: Message, is_owner: bool = False, **kwargs):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer("Usage: <code>/removeslot CHANNEL_ID</code>", parse_mode="HTML")
@@ -107,7 +107,7 @@ async def cmd_removeslot(message: Message, **kwargs):
         await message.answer("⚠️ Invalid channel ID.")
         return
 
-    ok = await CosmicBotz.remove_slot(message.from_user.id, channel_id)
+    ok = await CosmicBotz.remove_slot(message.from_user.id, channel_id, is_owner=is_owner)
     if ok:
         await message.answer(f"✅ Slot removed for <code>{channel_id}</code>.", parse_mode="HTML")
     else:
@@ -679,14 +679,14 @@ async def cmd_missed(message: Message, **kwargs):
 # ── Slot list pagination ──────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("slotpage_"))
-async def cb_slot_page(call: CallbackQuery, **kwargs):
+async def cb_slot_page(call: CallbackQuery, is_owner: bool = False, **kwargs):
     await call.answer()
     parts = call.data.split("_")   # slotpage_<prefix>_<page>
     if len(parts) < 3 or parts[2] == "noop":
         return
     prefix = parts[1]
     page   = int(parts[2])
-    slots  = await CosmicBotz.get_slots(call.from_user.id)
+    slots  = await CosmicBotz.get_slots(call.from_user.id, is_owner=is_owner)
     if not slots:
         await call.message.edit_text("📭 No slots found.")
         return
