@@ -57,14 +57,33 @@ def confirm_add_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def slot_list_keyboard(slots: list) -> InlineKeyboardMarkup:
+SLOTS_PAGE_SIZE = 8
+
+def slot_list_keyboard(slots: list, page: int = 0, prefix: str = "slot") -> InlineKeyboardMarkup:
+    """Paginated slot list. prefix='slot' for /addcontent, prefix='rmslot' for /removeslot."""
+    total      = len(slots)
+    total_pages = max(1, -(-total // SLOTS_PAGE_SIZE))  # ceil division
+    start      = page * SLOTS_PAGE_SIZE
+    page_slots = slots[start : start + SLOTS_PAGE_SIZE]
+
     builder = InlineKeyboardBuilder()
-    for slot in slots:
+    for slot in page_slots:
         builder.button(
             text=f"📢 {slot['slot_name']}",
-            callback_data=f"slot_{slot['channel_id']}"
+            callback_data=f"{prefix}_{slot['channel_id']}"
         )
     builder.adjust(1)
+
+    # Nav row — only show if more than one page
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"slotpage_{prefix}_{page-1}"))
+        nav.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="slotpage_noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"slotpage_{prefix}_{page+1}"))
+        builder.row(*nav)
+
     return builder.as_markup()
 
 
@@ -154,15 +173,22 @@ def settings_keyboard(current_revoke: int = 30) -> InlineKeyboardMarkup:
 
 
 def quick_tmdb_keyboard(results: list, channel_id: int) -> InlineKeyboardMarkup:
-    """Show TMDB search results for quick-slot auto-flow."""
+    """Show TMDB search results with type + year label to avoid mis-taps."""
+    TYPE_ICON = {"movie": "🎬 Movie", "tv": "📺 Series", "anime": "🎌 Anime"}
     rows = []
     for r in results[:5]:
-        tmdb_id = r.get("id", 0)
-        title   = (r.get("title") or r.get("name") or "Unknown")[:40]
-        year    = (r.get("release_date") or r.get("first_air_date") or "")[:4]
-        mtype   = "movie" if r.get("release_date") else "tv"
-        label   = title + (" (" + year + ")" if year else "")
-        cb      = "qslot_tmdb|" + str(channel_id) + "|" + str(tmdb_id) + "|" + mtype
+        tmdb_id    = r.get("id", 0)
+        title      = (r.get("title") or r.get("name") or "Unknown")
+        year       = (r.get("release_date") or r.get("first_air_date") or "")[:4]
+        mtype      = "movie" if r.get("release_date") else "tv"
+        type_label = TYPE_ICON.get(mtype, "📺 Series")
+        # Format: [🎬 Movie] Title (2022) — truncate title to keep under 64 bytes total
+        prefix = "[" + type_label + "] "
+        suffix = (" (" + year + ")") if year else ""
+        max_t  = 64 - len((prefix + suffix).encode())
+        title  = title.encode()[:max_t].decode("utf-8", errors="ignore").strip()
+        label  = prefix + title + suffix
+        cb     = "qslot_tmdb|" + str(channel_id) + "|" + str(tmdb_id) + "|" + mtype
         rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
-    rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="qslot_cancel")])
+    rows.append([InlineKeyboardButton(text="❌ None of these — skip", callback_data="qslot_cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
