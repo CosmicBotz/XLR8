@@ -37,7 +37,7 @@ async def _send_post(
     item: dict,
     chat_id: int,
     revoke_minutes: int,
-    user_msg_id: int      # deleted together with post after timer
+    user_msg_id: int = None  # Original search message ID
 ):
     slot_channel_id = item.get("slot_channel_id") or 0
     invite_link     = None
@@ -63,7 +63,7 @@ async def _send_post(
             from_chat_id=item["log_channel_id"],
             message_id=item["message_id"],
             reply_markup=kb,
-            reply_to_message_id=user_msg_id if user_msg_id else None,
+            reply_to_message_id=user_msg_id, # FIX: Always reply to the user's search msg
             allow_sending_without_reply=True
         )
     except Exception as e:
@@ -74,8 +74,12 @@ async def _send_post(
         return
 
     # Delete user msg + bot post together after timer
+    ids_to_delete = [sent.message_id]
+    if user_msg_id:
+        ids_to_delete.append(user_msg_id)
+
     await task_manager.schedule(
-        _delete_messages(bot, chat_id, [sent.message_id, user_msg_id]),
+        _delete_messages(bot, chat_id, ids_to_delete),
         delay=revoke_minutes * 60
     )
 
@@ -118,7 +122,8 @@ async def _handle_filter(
         await message.answer(
             build_index_caption(letter, results),
             reply_markup=index_results_keyboard(results),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_to_message_id=message.message_id # FIX: Reply to user so callback can find the msg ID
         )
         return
 
@@ -146,7 +151,8 @@ async def _handle_filter(
         await message.answer(
             title,
             reply_markup=index_results_keyboard(results),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_to_message_id=message.message_id # FIX: Reply to user so callback can find the msg ID
         )
 
 
@@ -197,11 +203,13 @@ async def cb_show_title(
     is_owner: bool = False,
     **kwargs
 ):
-    await call.answer()
+    # Find the original user search message
+    orig_msg_id = None
+    if call.message.reply_to_message:
+        orig_msg_id = call.message.reply_to_message.message_id
 
     filter_id = call.data.split("_", 1)[1]
     chat_id   = call.message.chat.id
-    is_group  = call.message.chat.type in ("group", "supergroup")
     is_private = call.message.chat.type == ChatType.PRIVATE
 
     if is_private and not (is_admin or is_owner):
@@ -216,14 +224,11 @@ async def cb_show_title(
     if not item.get("log_channel_id") or not item.get("message_id"):
         await call.answer("⚠️ Not posted yet. Ask admin to re-add it.", show_alert=True)
         return
+        
+    await call.answer()
 
     settings       = await CosmicBotz.get_settings()
     revoke_minutes = settings.get("auto_revoke_minutes", 30)
-
-    # Original user search message (index msg is a reply to it)
-    orig_msg_id = None
-    if call.message.reply_to_message:
-        orig_msg_id = call.message.reply_to_message.message_id
 
     # Delete index message immediately
     try:
@@ -231,9 +236,24 @@ async def cb_show_title(
     except Exception:
         pass
 
+    # Send post as reply to the original user message
     await _send_post(bot, item, chat_id, revoke_minutes, orig_msg_id)
 
 
 @router.callback_query(F.data.startswith("nf_"))
 async def cb_not_found(call: CallbackQuery, **kwargs):
     await call.answer("⚠️ Title not available yet.", show_alert=True)
+
+
+# ── Close index button ────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "close_index")
+async def cb_close_index(call: CallbackQuery):
+    await call.answer("Closed")
+    try:
+        await call.message.delete()
+        # Optional: delete the user's original search message too
+        # if call.message.reply_to_message:
+        #     await call.message.reply_to_message.delete()
+    except Exception:
+        pass
