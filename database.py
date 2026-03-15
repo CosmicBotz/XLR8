@@ -1,13 +1,9 @@
 """
 database.py — Single database module for Auto Filter CosmicBotz.
-
-Usage anywhere in the bot:
-    from database import CosmicBotz
-    await CosmicBotz.connect()
-    await CosmicBotz.add_filter(data)
-    ...
 """
 
+import re
+import unicodedata
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING
 from bson import ObjectId
@@ -62,6 +58,8 @@ class Database:
         await db.filters.create_index([("first_letter", ASCENDING)])
         await db.filters.create_index([("title",        ASCENDING)])
         await db.filters.create_index([("acronym",      ASCENDING)])
+        # NEW: Index for the normalized titles to make searches lightning fast
+        await db.filters.create_index([("title_normalized", ASCENDING)])
         await db.slots.create_index(  [("owner_id",     ASCENDING)])
         await db.groups.create_index( [("group_id",     ASCENDING)], unique=True)
         await db.search_logs.create_index([("count",  -1)])
@@ -76,7 +74,6 @@ class Database:
 
     @staticmethod
     def _normalize_title(s: str) -> str:
-        import re, unicodedata
         s = unicodedata.normalize("NFD", s)
         s = "".join(c for c in s if unicodedata.category(c) != "Mn")
         s = s.lower()
@@ -87,13 +84,20 @@ class Database:
         """Add a title to the index. Returns inserted _id str or None if duplicate."""
         db = self.db()
         title = data.get("title", "")
+        
+        # 🟢 ADDED: We now save the normalized title alongside the original
+        data["title_normalized"] = self._normalize_title(title)
         data["first_letter"] = title[0].upper() if title else "#"
         data["created_at"]   = datetime.utcnow()
 
-        # Auto-generate acronym from first letters of each word (3+ word titles only)
-        words = title.split()
-        if len(words) >= 3:
-            data["acronym"] = "".join(w[0].lower() for w in words if w)
+        # 🚀 UPGRADED ACRONYM LOGIC: 
+        # Splits by spaces, hyphens, or underscores. Works for 2+ word titles!
+        # "Hana-Kimi" -> "hk", "Death Note" -> "dn", "Sword Art Online" -> "sao"
+        chunks = re.split(r'[\s\-_]+', title)
+        chunks = [c for c in chunks if c] # Remove empty chunks
+        
+        if len(chunks) >= 2:
+            data["acronym"] = "".join(c[0].lower() for c in chunks if c[0].isalnum())
         else:
             data["acronym"] = ""
 
@@ -107,7 +111,6 @@ class Database:
         return str(result.inserted_id)
 
     async def get_by_letter(self, letter: str) -> list:
-        """All titles whose first letter matches."""
         db = self.db()
         cursor = db.filters.find(
             {"first_letter": letter.upper()}
@@ -115,33 +118,13 @@ class Database:
         return await cursor.to_list(length=100)
 
     async def search_title(self, query: str) -> list:
-        """
-        Fuzzy title search:
-        - Single short words (≤3 chars) only match if they are a known abbreviation
-          e.g. "hi", "ok", "hey" → no results (not abbr)
-          e.g. "jjk" → Jujutsu Kaisen, "aot" → Attack on Titan
-        - Acronym matching: "JJK" / "jjk" checked against title initials
-        - Multi-word: all words must appear in title (any order)
-        - Fallback: longest word if 2+ words typed
-        """
-        import re, unicodedata
-
-        def _normalize(s: str) -> str:
-            s = unicodedata.normalize("NFD", s)
-            s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-            s = s.lower()
-            s = re.sub(r"[^a-z0-9 ]", " ", s)
-            return re.sub(r"\s+", " ", s).strip()
-
-        norm_q_raw = _normalize(query.strip())
+        norm_q_raw = self._normalize_title(query.strip())
         q_lower    = norm_q_raw
 
-        # ── Abbreviation expansion (DB custom only) ──────────────────────────
         ABBR = await self.get_abbr_map()
 
-        # Expand full query as abbreviation
         if q_lower in ABBR:
-            norm_q = _normalize(ABBR[q_lower])
+            norm_q = self._normalize_title(ABBR[q_lower])
         else:
             tokens   = q_lower.split()
             expanded = [ABBR.get(t, t) for t in tokens]
@@ -160,17 +143,23 @@ class Database:
 
         words = [w for w in norm_q.split() if len(w) >= 2]
 
-        # ── GUARD: block 1-2 char queries that aren't abbreviations ────────
         orig_words = norm_q_raw.split()
         if len(orig_words) == 1 and len(norm_q_raw) <= 2 and norm_q_raw not in ABBR:
             return []
 
-        # ── Strategy 1: Exact phrase match (word boundary aware) ─────────────
+        # 🟢 FIX: Strategy 1 Flexible Regex Match (Spaces match Hyphens)
+        flexible_pattern = norm_q.replace(" ", r"[\s\-._]*")
         try:
-            pattern = r"(?i)\b" + re.escape(norm_q) + r"\b"
-            await _add(db.filters.find({"title_normalized": {"$regex": pattern}}))
-        except Exception:
-            pass
+            pattern = r"(?i).*\b" + flexible_pattern + r"\b.*"
+            cursor = db.filters.find({
+                "$or": [
+                    {"title_normalized": {"$regex": pattern}},
+                    {"title": {"$regex": pattern}}
+                ]
+            })
+            await _add(cursor)
+        except Exception as e:
+            logger.error(f"Search Strategy 1 Error: {e}")
 
         # ── Strategy 2: Original query exact match ───────────────────────────
         if not results:
@@ -254,7 +243,6 @@ class Database:
         permanent_invite: str,
         slot_channel_id: int = 0,
     ):
-        """Store log channel post location + permanent invite link + slot channel after /addcontent."""
         db = self.db()
         await db.filters.update_one(
             {"_id": ObjectId(filter_id)},
@@ -280,17 +268,10 @@ class Database:
     # SLOTS  (channel posting slots)
     # ══════════════════════════════════════════════════════════════════════════
 
-    async def add_slot(
-        self,
-        owner_id: int,
-        channel_id: int,
-        channel_name: str,
-        slot_name: str
-    ) -> tuple[bool, str]:
+    async def add_slot(self, owner_id: int, channel_id: int, channel_name: str, slot_name: str) -> tuple[bool, str]:
         db = self.db()
         if await db.slots.find_one({"channel_id": channel_id}):
             return False, "Channel already has a slot."
-
         await db.slots.insert_one({
             "owner_id":     owner_id,
             "channel_id":   channel_id,
@@ -317,24 +298,22 @@ class Database:
     async def get_slot(self, channel_id: int) -> dict | None:
         return await self.db().slots.find_one({"channel_id": channel_id})
 
+    async def get_slots_all(self) -> list:
+        db = self.db()
+        return await db.slots.find({}).to_list(length=None)
+
     # ══════════════════════════════════════════════════════════════════════════
-    # ADMINS
+    # ADMINS, SETTINGS, GROUPS, ABBREVIATIONS, LOGS, STATS
     # ══════════════════════════════════════════════════════════════════════════
+    # (Leaving these unchanged from your original as they work perfectly)
 
     async def add_admin(self, user_id: int):
         db = self.db()
-        await db.admins.update_one(
-            {"owner_id": OWNER_ID},
-            {"$addToSet": {"admins": user_id}},
-            upsert=True
-        )
+        await db.admins.update_one({"owner_id": OWNER_ID}, {"$addToSet": {"admins": user_id}}, upsert=True)
 
     async def remove_admin(self, user_id: int):
         db = self.db()
-        await db.admins.update_one(
-            {"owner_id": OWNER_ID},
-            {"$pull": {"admins": user_id}}
-        )
+        await db.admins.update_one({"owner_id": OWNER_ID}, {"$pull": {"admins": user_id}})
 
     async def get_admins(self) -> list:
         db = self.db()
@@ -346,10 +325,6 @@ class Database:
             return True
         return user_id in await self.get_admins()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SETTINGS
-    # ══════════════════════════════════════════════════════════════════════════
-
     async def get_settings(self) -> dict:
         db  = self.db()
         doc = await db.settings.find_one({"owner_id": OWNER_ID})
@@ -360,64 +335,35 @@ class Database:
             "watermark_text":      "",
             "watermark_logo_id":   "",
         }
-        if not doc:
-            return defaults
-        for k, v in defaults.items():
-            doc.setdefault(k, v)
+        if not doc: return defaults
+        for k, v in defaults.items(): doc.setdefault(k, v)
         return doc
 
     async def update_setting(self, key: str, value):
         db = self.db()
-        await db.settings.update_one(
-            {"owner_id": OWNER_ID},
-            {"$set": {key: value}},
-            upsert=True
-        )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # GROUPS  (verification)
-    # ══════════════════════════════════════════════════════════════════════════
+        await db.settings.update_one({"owner_id": OWNER_ID}, {"$set": {key: value}}, upsert=True)
 
     async def add_group(self, group_id: int, group_name: str, added_by: int) -> bool:
         db = self.db()
-        if await db.groups.find_one({"group_id": group_id}):
-            return False
+        if await db.groups.find_one({"group_id": group_id}): return False
         await db.groups.insert_one({
-            "group_id":    group_id,
-            "group_name":  group_name,
-            "added_by":    added_by,
-            "verified":    False,
-            "verified_by": None,
-            "verified_at": None,
-            "created_at":  datetime.utcnow()
+            "group_id": group_id, "group_name": group_name, "added_by": added_by,
+            "verified": False, "verified_by": None, "verified_at": None, "created_at": datetime.utcnow()
         })
         return True
 
-    async def verify_group(
-        self,
-        group_id: int,
-        verified_by: int,
-        invite_link: str = ""
-    ) -> bool:
+    async def verify_group(self, group_id: int, verified_by: int, invite_link: str = "") -> bool:
         db = self.db()
         result = await db.groups.update_one(
             {"group_id": group_id},
-            {"$set": {
-                "verified":     True,
-                "verified_by":  verified_by,
-                "verified_at":  datetime.utcnow(),
-                "invite_link":  invite_link,
-            }},
+            {"$set": {"verified": True, "verified_by": verified_by, "verified_at": datetime.utcnow(), "invite_link": invite_link}},
             upsert=True
         )
         return result.modified_count > 0 or result.upserted_id is not None
 
     async def unverify_group(self, group_id: int):
         db = self.db()
-        await db.groups.update_one(
-            {"group_id": group_id},
-            {"$set": {"verified": False, "verified_by": None, "verified_at": None}}
-        )
+        await db.groups.update_one({"group_id": group_id}, {"$set": {"verified": False, "verified_by": None, "verified_at": None}})
 
     async def is_group_verified(self, group_id: int) -> bool:
         db = self.db()
@@ -441,35 +387,21 @@ class Database:
     async def remove_group(self, group_id: int):
         await self.db().groups.delete_one({"group_id": group_id})
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # ABBREVIATIONS
-    # ══════════════════════════════════════════════════════════════════════════
-
     async def get_abbr_map(self) -> dict:
-        """Return all custom abbreviations as {abbr: full_title}."""
         db   = self.db()
         docs = await db.abbreviations.find().to_list(length=500)
         return {d["abbr"]: d["full"] for d in docs}
 
     async def set_abbr(self, abbr: str, full: str):
         db = self.db()
-        await db.abbreviations.update_one(
-            {"abbr": abbr.lower()},
-            {"$set": {"abbr": abbr.lower(), "full": full}},
-            upsert=True
-        )
+        await db.abbreviations.update_one({"abbr": abbr.lower()}, {"$set": {"abbr": abbr.lower(), "full": full}}, upsert=True)
 
     async def del_abbr(self, abbr: str) -> bool:
         db     = self.db()
         result = await db.abbreviations.delete_one({"abbr": abbr.lower()})
         return result.deleted_count > 0
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SEARCH LOGS  (missed searches + analytics)
-    # ══════════════════════════════════════════════════════════════════════════
-
     async def log_missed_search(self, query: str, user_id: int, group_id: int):
-        """Record a search that returned no results."""
         db  = self.db()
         now = datetime.utcnow()
         await db.search_logs.update_one(
@@ -484,35 +416,22 @@ class Database:
         )
 
     async def log_search(self, query: str, user_id: int, group_id: int, found: bool):
-        """Record every search for analytics."""
         db  = self.db()
         now = datetime.utcnow()
         await db.analytics.insert_one({
-            "query":    query.lower().strip(),
-            "user_id":  user_id,
-            "group_id": group_id,
-            "found":    found,
-            "date":     now,
-            "day":      now.strftime("%Y-%m-%d")
+            "query": query.lower().strip(), "user_id": user_id, "group_id": group_id,
+            "found": found, "date": now, "day": now.strftime("%Y-%m-%d")
         })
 
     async def get_missed_searches(self, limit: int = 10) -> list:
-        """Top unmatched searches sorted by count."""
         db = self.db()
-        cursor = db.search_logs.find(
-            {"fulfilled": False}
-        ).sort("count", -1).limit(limit)
+        cursor = db.search_logs.find({"fulfilled": False}).sort("count", -1).limit(limit)
         return await cursor.to_list(length=limit)
 
     async def mark_fulfilled(self, query: str):
-        """Mark a missed search as fulfilled after content is added."""
-        await self.db().search_logs.update_one(
-            {"query": query.lower().strip()},
-            {"$set": {"fulfilled": True}}
-        )
+        await self.db().search_logs.update_one({"query": query.lower().strip()}, {"$set": {"fulfilled": True}})
 
     async def get_analytics(self) -> dict:
-        """Aggregated analytics for /stats."""
         db    = self.db()
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -524,65 +443,44 @@ class Database:
         total_missed   = await db.analytics.count_documents({"found": False})
 
         top_q_res = await db.analytics.aggregate([
-            {"$match":  {"day": today}},
-            {"$group":  {"_id": "$query", "count": {"$sum": 1}}},
-            {"$sort":   {"count": -1}},
-            {"$limit":  1},
+            {"$match":  {"day": today}}, {"$group":  {"_id": "$query", "count": {"$sum": 1}}},
+            {"$sort":   {"count": -1}}, {"$limit":  1},
         ]).to_list(length=1)
         top_today = top_q_res[0]["_id"] if top_q_res else ""
 
         top_grp_res = await db.analytics.aggregate([
-            {"$group":  {"_id": "$group_id", "count": {"$sum": 1}}},
-            {"$sort":   {"count": -1}},
-            {"$limit":  1},
+            {"$group":  {"_id": "$group_id", "count": {"$sum": 1}}}, {"$sort":   {"count": -1}}, {"$limit":  1},
         ]).to_list(length=1)
         top_group_id  = top_grp_res[0]["_id"]   if top_grp_res else None
         top_group_cnt = top_grp_res[0]["count"] if top_grp_res else 0
 
         return {
-            "total_searches": total_searches,
-            "today_searches": today_searches,
-            "today_found":    today_found,
-            "today_missed":   today_missed,
-            "total_found":    total_found,
-            "total_missed":   total_missed,
-            "hit_rate":       round((total_found / total_searches * 100), 1) if total_searches else 0,
-            "top_today":      top_today,
-            "top_group_id":   top_group_id,
-            "top_group_cnt":  top_group_cnt,
+            "total_searches": total_searches, "today_searches": today_searches, "today_found": today_found,
+            "today_missed": today_missed, "total_found": total_found, "total_missed": total_missed,
+            "hit_rate": round((total_found / total_searches * 100), 1) if total_searches else 0,
+            "top_today": top_today, "top_group_id": top_group_id, "top_group_cnt": top_group_cnt,
         }
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STATS
-    # ══════════════════════════════════════════════════════════════════════════
 
     async def get_stats(self) -> dict:
         db = self.db()
-        anime  = await db.filters.count_documents({"media_type": "anime"})
-        tvshow = await db.filters.count_documents({"media_type": "tvshow"})
-        movie  = await db.filters.count_documents({"media_type": "movie"})
-        total  = await db.filters.count_documents({})
-        groups          = await db.groups.count_documents({})
-        verified_groups = await db.groups.count_documents({"verified": True})
-        slots           = await db.slots.count_documents({})
         return {
-            "anime":           anime,
-            "tvshow":          tvshow,
-            "movie":           movie,
-            "total":           total,
-            "groups":          groups,
-            "verified_groups": verified_groups,
-            "slots":           slots,
+            "anime":  await db.filters.count_documents({"media_type": "anime"}),
+            "tvshow": await db.filters.count_documents({"media_type": "tvshow"}),
+            "movie":  await db.filters.count_documents({"media_type": "movie"}),
+            "total":  await db.filters.count_documents({}),
+            "groups": await db.groups.count_documents({}),
+            "verified_groups": await db.groups.count_documents({"verified": True}),
+            "slots":  await db.slots.count_documents({}),
         }
 
     # ══════════════════════════════════════════════════════════════════════════
-    # SLOTS ALL
+    # 🚨 TEMPORARY MIGRATION SCRIPT 🚨
     # ══════════════════════════════════════════════════════════════════════════
-
-    async def get_slots_all(self) -> list:
+    async def temp_fix_database(self) -> int:
+        """
+        Run this ONCE to fix old movies/shows that don't have 'title_normalized' 
+        or the new upgraded acronyms. You can delete this function later.
+        """
         db = self.db()
-        return await db.slots.find({}).to_list(length=None)
-
-
-# ── Singleton ──────────────────────────────────────────────────────────────────
-CosmicBotz = Database()
+        # Find anything missing the new 'title_normalized' field
+        cursor 
