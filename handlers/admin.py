@@ -1,24 +1,22 @@
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.enums import ChatType
 
 from database import CosmicBotz
 from middlewares.auth import owner_only, admin_only, dm_only
 from keyboards.inline import slot_list_keyboard, admin_list_keyboard
-import json
+from config import OWNER_ID
+import logging
 
 router = Router()
-
 
 class AddSlotState(StatesGroup):
     waiting_channel_id = State()
     waiting_slot_name  = State()
 
-
-# ── /addslot ──────────────────────────────────────────────────────────────────
+# ── /addslot (FSM Logic) ─────────────────────────────────────────────────────
 
 @router.message(Command("addslot"))
 @owner_only
@@ -32,7 +30,6 @@ async def cmd_addslot(message: Message, state: FSMContext, **kwargs):
         parse_mode="HTML"
     )
     await state.set_state(AddSlotState.waiting_channel_id)
-
 
 @router.message(AddSlotState.waiting_channel_id)
 async def slot_got_channel(message: Message, state: FSMContext):
@@ -54,7 +51,6 @@ async def slot_got_channel(message: Message, state: FSMContext):
     )
     await state.set_state(AddSlotState.waiting_slot_name)
 
-
 @router.message(AddSlotState.waiting_slot_name)
 async def slot_got_name(message: Message, state: FSMContext):
     data         = await state.get_data()
@@ -75,29 +71,41 @@ async def slot_got_name(message: Message, state: FSMContext):
     else:
         await message.answer(f"⚠️ {msg}")
 
+# ── Slot View Commands (/slot & /slots) ───────────────────────────────────────
 
-
-# ── Updated /slots ────────────────────────────────────────────────────────────
-
-@router.message(Command("slots"))
-@owner_only
-async def cmd_slots(message: Message, **kwargs):
-    # CHANGED: Use get_slots_all() instead of filtering by user_id
-    slots = await CosmicBotz.get_slots_all() 
+@router.message(Command("slot"))
+@admin_only
+@dm_only
+async def cmd_personal_slots(message: Message, **kwargs):
+    """View slots added ONLY by you."""
+    slots = await CosmicBotz.get_slots(message.from_user.id)
     if not slots:
-        await message.answer("📭 No slots configured. Use /addslot to add one.")
+        await message.answer("📭 You haven't added any slots yet.")
         return
     await message.answer(
-        f"📋 <b>All Configured Slots ({len(slots)})</b>\n<i>Tap a slot to remove it.</i>",
-        reply_markup=slot_list_keyboard(slots, page=0, prefix="rmslot"),
+        f"👤 <b>Your Personal Slots ({len(slots)})</b>\n<i>Tap a slot to remove it.</i>",
+        reply_markup=slot_list_keyboard(slots, page=0, prefix="rmslot_p"),
         parse_mode="HTML"
     )
 
+@router.message(Command("slots"))
+@owner_only
+async def cmd_all_slots(message: Message, **kwargs):
+    """View ALL slots in the database (Owner only)."""
+    slots = await CosmicBotz.get_slots_all() 
+    if not slots:
+        await message.answer("📭 No slots configured in the bot.")
+        return
+    await message.answer(
+        f"🌐 <b>Global Slot List ({len(slots)})</b>\n<i>Showing all slots from all admins.</i>",
+        reply_markup=slot_list_keyboard(slots, page=0, prefix="rmslot_g"),
+        parse_mode="HTML"
+    )
 
-# ── /removeslot ───────────────────────────────────────────────────────────────
+# ── /removeslot (Text Command) ────────────────────────────────────────────────
 
 @router.message(Command("removeslot"))
-@owner_only
+@admin_only
 async def cmd_removeslot(message: Message, **kwargs):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
@@ -109,14 +117,64 @@ async def cmd_removeslot(message: Message, **kwargs):
         await message.answer("⚠️ Invalid channel ID.")
         return
 
-    ok = await CosmicBotz.remove_slot(message.from_user.id, channel_id)
+    is_owner = (message.from_user.id == OWNER_ID)
+    ok = await CosmicBotz.remove_slot(message.from_user.id, channel_id, is_owner=is_owner)
     if ok:
         await message.answer(f"✅ Slot removed for <code>{channel_id}</code>.", parse_mode="HTML")
     else:
-        await message.answer("⚠️ Slot not found.")
+        await message.answer("⚠️ Slot not found or you don't have permission to remove it.")
 
+# ── Slot Callbacks (Pagination & Inline Removal) ──────────────────────────────
 
-# ── /addadmin / /removeadmin / /admins ────────────────────────────────────────
+@router.callback_query(F.data.startswith("slotpage_"))
+async def cb_slot_page(call: CallbackQuery, **kwargs):
+    await call.answer()
+    parts = call.data.split("_")  # slotpage_rmslot_<p/g>_<page>
+    if len(parts) < 4 or parts[3] == "noop":
+        return
+    
+    view_type = parts[2] # 'p' or 'g'
+    page      = int(parts[3])
+
+    if view_type == "p":
+        slots = await CosmicBotz.get_slots(call.from_user.id)
+    else:
+        slots = await CosmicBotz.get_slots_all() 
+
+    if not slots:
+        await call.message.edit_text("📭 No slots found.")
+        return
+        
+    await call.message.edit_reply_markup(
+        reply_markup=slot_list_keyboard(slots, page=page, prefix=f"rmslot_{view_type}")
+    )
+
+@router.callback_query(F.data.startswith("rmslot_"))
+async def cb_remove_slot_inline(call: CallbackQuery):
+    """Handles deletion when a slot button is clicked in the list."""
+    parts = call.data.split("_") # rmslot_<p/g>_<cid>
+    if len(parts) < 3: return
+    
+    view_type = parts[1]
+    channel_id = int(parts[2])
+    
+    is_owner = (call.from_user.id == OWNER_ID)
+    ok = await CosmicBotz.remove_slot(call.from_user.id, channel_id, is_owner=is_owner)
+    
+    if ok:
+        await call.answer("✅ Slot Removed", show_alert=True)
+        # Refresh the current list
+        slots = await CosmicBotz.get_slots(call.from_user.id) if view_type == "p" else await CosmicBotz.get_slots_all()
+        if slots:
+            await call.message.edit_reply_markup(
+                reply_markup=slot_list_keyboard(slots, 0, f"rmslot_{view_type}")
+            )
+        else:
+            await call.message.edit_text("📭 All slots have been removed.")
+    else:
+        await call.answer("⚠️ You can only remove your own slots.", show_alert=True)
+
+# ── Admin Management ─────────────────────────────────────────────────────────
 
 @router.message(Command("addadmin"))
 @owner_only
@@ -133,7 +191,6 @@ async def cmd_addadmin(message: Message, **kwargs):
     await CosmicBotz.add_admin(user_id)
     await message.answer(f"✅ <code>{user_id}</code> added as admin.", parse_mode="HTML")
 
-
 @router.message(Command("removeadmin"))
 @owner_only
 async def cmd_removeadmin(message: Message, **kwargs):
@@ -149,20 +206,18 @@ async def cmd_removeadmin(message: Message, **kwargs):
     await CosmicBotz.remove_admin(user_id)
     await message.answer(f"✅ <code>{user_id}</code> removed from admins.", parse_mode="HTML")
 
-
 @router.message(Command("admins"))
 @owner_only
 async def cmd_list_admins(message: Message, **kwargs):
     admins = await CosmicBotz.get_admins()
     if not admins:
-        await message.answer("👥 No admins set. Use /addadmin USER_ID.")
+        await message.answer("👥 No admins set.")
         return
     await message.answer(
         f"👥 <b>Admins ({len(admins)})</b>\nTap to remove:",
         reply_markup=admin_list_keyboard(admins),
         parse_mode="HTML"
     )
-
 
 @router.callback_query(F.data.startswith("rmadmin_"))
 async def cb_remove_admin(call: CallbackQuery):
@@ -171,8 +226,7 @@ async def cb_remove_admin(call: CallbackQuery):
     await call.answer(f"✅ Removed admin {uid}")
     await call.message.edit_text(f"✅ Admin <code>{uid}</code> removed.", parse_mode="HTML")
 
-
-# ── /setrevoke ────────────────────────────────────────────────────────────────
+# ── Settings Logic ────────────────────────────────────────────────────────────
 
 @router.message(Command("setrevoke"))
 @owner_only
@@ -181,24 +235,16 @@ async def cmd_setrevoke(message: Message, **kwargs):
     if len(args) < 2:
         settings = await CosmicBotz.get_settings()
         current  = settings.get("auto_revoke_minutes", 30)
-        await message.answer(
-            f"⏱ Current auto-revoke: <b>{current} minutes</b>\n\n"
-            "To change: <code>/setrevoke MINUTES</code>",
-            parse_mode="HTML"
-        )
+        await message.answer(f"⏱ Current: <b>{current}m</b>\nTo change: <code>/setrevoke MINS</code>", parse_mode="HTML")
         return
     try:
         minutes = int(args[1].strip())
-        if minutes < 1:
-            raise ValueError
+        if minutes < 1: raise ValueError
     except ValueError:
-        await message.answer("⚠️ Provide a valid number of minutes (min 1).")
+        await message.answer("⚠️ Use a valid number.")
         return
     await CosmicBotz.update_setting("auto_revoke_minutes", minutes)
     await message.answer(f"✅ Auto-revoke set to <b>{minutes} minutes</b>.", parse_mode="HTML")
-
-
-# ── Settings helpers ──────────────────────────────────────────────────────────
 
 async def _settings_text_and_kb():
     from keyboards.inline import settings_keyboard
@@ -214,21 +260,18 @@ async def _settings_text_and_kb():
 
     text = (
         "⚙️ <b>Bot Settings</b>\n\n"
-        "⏱ <b>Auto-Revoke:</b> <code>" + str(revoke) + " min</code>\n"
-        "📢 <b>Slots:</b> <code>" + str(len(slots)) + "</code>\n"
-        "👥 <b>Admins:</b> <code>" + str(len(admins)) + "</code>\n\n"
-        "✏️ <b>Caption</b>\n"
-        "  Quality: <code>" + quality + "</code>\n"
-        "  Audio:   <code>" + audio + "</code>\n\n"
-        "🖼 <b>Watermark</b>\n"
-        "  Text: <code>" + (wm_text or "—") + "</code>\n"
-        "  Logo: " + ("✅ Set" if wm_logo else "—") + "\n"
+        f"⏱ <b>Auto-Revoke:</b> <code>{revoke} min</code>\n"
+        f"📢 <b>Slots:</b> <code>{len(slots)}</code>\n"
+        f"👥 <b>Admins:</b> <code>{len(admins)}</code>\n\n"
+        f"✏️ <b>Caption</b>\n"
+        f"  Quality: <code>{quality}</code>\n"
+        f"  Audio:   <code>{audio}</code>\n\n"
+        f"🖼 <b>Watermark</b>\n"
+        f"  Text: <code>{wm_text or '—'}</code>\n"
+        f"  Logo: {'✅ Set' if wm_logo else '—'}\n"
     )
     kb = settings_keyboard(revoke)
     return text, kb
-
-
-# ── /settings ─────────────────────────────────────────────────────────────────
 
 @router.message(Command("settings"))
 @owner_only
@@ -236,16 +279,13 @@ async def cmd_settings(message: Message, **kwargs):
     text, kb = await _settings_text_and_kb()
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-
 @router.callback_query(F.data == "settings_refresh")
 async def cb_settings_refresh(call: CallbackQuery, is_owner: bool = False, **kwargs):
     if not is_owner:
         await call.answer("⛔ Owner only.", show_alert=True)
         return
-    await call.answer("Refreshed ✅")
     text, kb = await _settings_text_and_kb()
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
 
 @router.callback_query(F.data.startswith("set_revoke_"))
 async def cb_set_revoke(call: CallbackQuery, is_owner: bool = False, **kwargs):
@@ -254,439 +294,185 @@ async def cb_set_revoke(call: CallbackQuery, is_owner: bool = False, **kwargs):
         return
     minutes = int(call.data.split("_")[-1])
     await CosmicBotz.update_setting("auto_revoke_minutes", minutes)
-    await call.answer("✅ Auto-revoke set to " + str(minutes) + " min")
+    await call.answer(f"✅ Set to {minutes}m")
     text, kb = await _settings_text_and_kb()
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
-
-@router.callback_query(F.data == "settings_slots")
-async def cb_settings_slots(call: CallbackQuery, is_owner: bool = False, **kwargs):
-    if not is_owner:
-        await call.answer()
-        return
-    slots = await CosmicBotz.get_slots_all()
-    if not slots:
-        await call.answer("No slots added yet.", show_alert=True)
-        return
-    lines = ["📢 <b>Slots</b>\n"]
-    for s in slots:
-        lines.append("• <b>" + s["slot_name"] + "</b> — <code>" + str(s["channel_id"]) + "</code>")
-    await call.answer()
-    await call.message.answer("\n".join(lines), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "settings_admins")
-async def cb_settings_admins(call: CallbackQuery, is_owner: bool = False, **kwargs):
-    if not is_owner:
-        await call.answer()
-        return
-    admins = await CosmicBotz.get_admins()
-    if not admins:
-        await call.answer("No admins added yet.", show_alert=True)
-        return
-    lines = ["👥 <b>Admins</b>\n"] + ["• <code>" + str(a) + "</code>" for a in admins]
-    await call.answer()
-    await call.message.answer("\n".join(lines), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "settings_caption")
-async def cb_settings_caption(call: CallbackQuery, is_owner: bool = False, **kwargs):
-    if not is_owner:
-        await call.answer()
-        return
-    await call.answer()
-    await call.message.answer(
-        "✏️ <b>Caption Commands</b>\n\n"
-        "/setquality — set quality line\n"
-        "/setaudio — set audio line\n"
-        "/setcaption — view/edit full templates",
-        parse_mode="HTML"
-    )
-
-
-@router.callback_query(F.data == "settings_watermark")
-async def cb_settings_watermark(call: CallbackQuery, is_owner: bool = False, **kwargs):
-    if not is_owner:
-        await call.answer()
-        return
-    await call.answer()
-    await call.message.answer(
-        "🖼 <b>Watermark Commands</b>\n\n"
-        "/setwatermark TEXT — set watermark text\n"
-        "/setlogo — reply to a photo to set logo\n"
-        "/clearwatermark — remove watermark",
-        parse_mode="HTML"
-    )
-
-
-# ── /delcontent ───────────────────────────────────────────────────────────────
+# ── Content & Watermark Management ───────────────────────────────────────────
 
 @router.message(Command("delcontent"))
 @admin_only
 async def cmd_delcontent(message: Message, **kwargs):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer(
-            "Usage: <code>/delcontent TITLE</code>\n\n"
-            "Example: <code>/delcontent Naruto</code>\n\n"
-            "To find exact title, search it first then copy the name.",
-            parse_mode="HTML"
-        )
+        await message.answer("Usage: <code>/delcontent TITLE</code>", parse_mode="HTML")
         return
 
     query = args[1].strip()
-
-    # Search for matching titles
-    from database import CosmicBotz as _db
-    results = await _db.search_title(query)
+    results = await CosmicBotz.search_title(query)
 
     if not results:
-        await message.answer(f"❌ No title found matching: <b>{query}</b>", parse_mode="HTML")
+        await message.answer(f"❌ No matches for: <b>{query}</b>", parse_mode="HTML")
         return
 
     if len(results) == 1:
         item = results[0]
         from keyboards.inline import confirm_delete_keyboard
         await message.answer(
-            f"⚠️ Delete <b>{item['title']}</b> ({item.get('media_type','?')}) from index?",
+            f"⚠️ Delete <b>{item['title']}</b> from index?",
             reply_markup=confirm_delete_keyboard(str(item["_id"]), item["title"]),
             parse_mode="HTML"
         )
     else:
         from keyboards.inline import delete_search_keyboard
         await message.answer(
-            f"🔍 Found <b>{len(results)}</b> matches. Select one to delete:",
+            f"🔍 Found {len(results)} matches. Select one:",
             reply_markup=delete_search_keyboard(results[:10]),
             parse_mode="HTML"
         )
 
-
 @router.callback_query(F.data.startswith("delconfirm_"))
 async def cb_confirm_delete(call: CallbackQuery):
-    filter_id = call.data.split("_", 1)[1]
-    from database import CosmicBotz as _db
     from bson import ObjectId
-    db   = _db.db()
-    item = await db.filters.find_one({"_id": ObjectId(filter_id)})
-    if not item:
-        await call.message.edit_text("⚠️ Already deleted or not found.")
-        return
-    await db.filters.delete_one({"_id": ObjectId(filter_id)})
-    await call.message.edit_text(
-        f"✅ <b>{item['title']}</b> removed from index.",
-        parse_mode="HTML"
-    )
-
-
-@router.callback_query(F.data.startswith("delselect_"))
-async def cb_delete_select(call: CallbackQuery):
     filter_id = call.data.split("_", 1)[1]
-    from database import CosmicBotz as _db
-    from bson import ObjectId
-    item = await _db.get_filter_by_id(filter_id)
-    if not item:
-        await call.answer("Not found.", show_alert=True)
-        return
-    from keyboards.inline import confirm_delete_keyboard
-    await call.message.edit_text(
-        f"⚠️ Delete <b>{item['title']}</b> ({item.get('media_type','?')}) from index?",
-        reply_markup=confirm_delete_keyboard(filter_id, item["title"]),
-        parse_mode="HTML"
-    )
-
-
-@router.callback_query(F.data == "delcancel")
-async def cb_delete_cancel(call: CallbackQuery):
-    await call.message.edit_text("❌ Cancelled.")
-
-
-# ── /setcaption ───────────────────────────────────────────────────────────────
+    db = CosmicBotz.db()
+    item = await db.filters.find_one_and_delete({"_id": ObjectId(filter_id)})
+    if item:
+        await call.message.edit_text(f"✅ <b>{item['title']}</b> removed.", parse_mode="HTML")
+    else:
+        await call.message.edit_text("⚠️ Not found.")
 
 @router.message(Command("setcaption"))
 @owner_only
 async def cmd_setcaption(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     from services.caption import DEFAULT_TEMPLATE_SERIES, DEFAULT_TEMPLATE_MOVIE, CAPTION_VARIABLES
+    args = message.text.split(maxsplit=2)
+    settings = await CosmicBotz.get_settings()
 
-    args     = message.text.split(maxsplit=2)
-    settings = await _db.get_settings()
-
-    # /setcaption — show current templates + all variables
     if len(args) == 1:
         series_t = settings.get("caption_template_series", DEFAULT_TEMPLATE_SERIES)
         movie_t  = settings.get("caption_template_movie",  DEFAULT_TEMPLATE_MOVIE)
         vars_txt = "\n".join(f"<code>{k}</code> — {v}" for k, v in CAPTION_VARIABLES.items())
         await message.answer(
-            "✏️ <b>Caption Templates</b>\n\n"
-            "<b>📺 Series/Anime template:</b>\n"
-            f"<code>{series_t}</code>\n\n"
-            "<b>🎬 Movie template:</b>\n"
-            f"<code>{movie_t}</code>\n\n"
-            "──────────────\n"
-            "<b>Available variables:</b>\n"
-            f"{vars_txt}\n\n"
-            "To change:\n"
-            "<code>/setcaption series YOUR TEMPLATE</code>\n"
-            "<code>/setcaption movie YOUR TEMPLATE</code>\n"
-            "<code>/setcaption reset</code> — restore defaults\n\n"
-            "<i>Use \\n for line breaks in template</i>",
+            "✏️ <b>Templates</b>\n\n"
+            f"<b>📺 Series:</b> <code>{series_t}</code>\n"
+            f"<b>🎬 Movie:</b> <code>{movie_t}</code>\n\n"
+            f"<b>Variables:</b>\n{vars_txt}\n\n"
+            "Use: <code>/setcaption series TEMPLATE</code>",
             parse_mode="HTML"
         )
         return
 
     sub = args[1].lower().strip()
-
     if sub == "reset":
-        await _db.update_setting("caption_template_series", DEFAULT_TEMPLATE_SERIES)
-        await _db.update_setting("caption_template_movie",  DEFAULT_TEMPLATE_MOVIE)
-        await message.answer("✅ Caption templates reset to defaults.")
+        await CosmicBotz.update_setting("caption_template_series", DEFAULT_TEMPLATE_SERIES)
+        await CosmicBotz.update_setting("caption_template_movie",  DEFAULT_TEMPLATE_MOVIE)
+        await message.answer("✅ Templates reset.")
         return
 
-    if sub not in ("series", "movie"):
-        await message.answer(
-            "Usage:\n"
-            "<code>/setcaption series TEMPLATE</code>\n"
-            "<code>/setcaption movie TEMPLATE</code>\n"
-            "<code>/setcaption reset</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    if len(args) < 3:
-        await message.answer(
-            f"⚠️ Provide a template after <code>{sub}</code>.\n\n"
-            "Example:\n"
-            "<code>/setcaption series &lt;b&gt;{{title}}&lt;/b&gt;\n&lt;blockquote&gt;▶ Episodes: {{episodes}}\n▶ Audio: {{audio}}&lt;/blockquote&gt;</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    template = args[2].strip().replace("\\n", "\n")
-
-    # Validate — try formatting with dummy data
-    try:
-        template.format(
-            title="Test", type="Anime Series (2020)", year="2020",
-            status="Ended", episodes="24", season="1",
-            quality="1080p", audio="Hindi", genres="Action",
-            runtime="24", overview="Test overview"
-        )
-    except KeyError as e:
-        await message.answer(
-            f"⚠️ Unknown variable: <code>{e}</code>\n"
-            "Use /setcaption to see valid variables.",
-            parse_mode="HTML"
-        )
-        return
-
-    key = "caption_template_series" if sub == "series" else "caption_template_movie"
-    await _db.update_setting(key, template)
-    await message.answer(f"✅ <b>{sub.title()}</b> caption template updated!", parse_mode="HTML")
-
+    if sub in ("series", "movie") and len(args) == 3:
+        template = args[2].strip().replace("\\n", "\n")
+        key = f"caption_template_{sub}"
+        await CosmicBotz.update_setting(key, template)
+        await message.answer(f"✅ {sub.title()} template updated!")
 
 @router.message(Command("setquality"))
 @owner_only
 async def cmd_setquality(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Usage: <code>/setquality 1080p FHD | 720p HD | 480p WEB-DL</code>", parse_mode="HTML")
-        return
-    value = args[1].strip()
-    await _db.update_setting("caption_quality", value)
-    await message.answer(f"✅ Quality set to:\n<code>{value}</code>", parse_mode="HTML")
-
+    if len(args) == 2:
+        await CosmicBotz.update_setting("caption_quality", args[1].strip())
+        await message.answer(f"✅ Quality set to: <code>{args[1]}</code>", parse_mode="HTML")
 
 @router.message(Command("setaudio"))
 @owner_only
 async def cmd_setaudio(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Usage: <code>/setaudio हिंदी (Hindi) #Official</code>", parse_mode="HTML")
-        return
-    value = args[1].strip()
-    await _db.update_setting("caption_audio", value)
-    await message.answer(f"✅ Audio set to:\n<code>{value}</code>", parse_mode="HTML")
-
-
-# ── Watermark commands ────────────────────────────────────────────────────────
+    if len(args) == 2:
+        await CosmicBotz.update_setting("caption_audio", args[1].strip())
+        await message.answer(f"✅ Audio set to: <code>{args[1]}</code>", parse_mode="HTML")
 
 @router.message(Command("setwatermark"))
 @owner_only
 async def cmd_setwatermark(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer(
-            "Usage: <code>/setwatermark YourChannelName</code>\n\n"
-            "This text appears as a pill in the top-right of every thumbnail.",
-            parse_mode="HTML"
-        )
-        return
-    value = args[1].strip()
-    await _db.update_setting("watermark_text", value)
-    await message.answer(f"✅ Watermark text set to: <code>{value}</code>", parse_mode="HTML")
-
+    if len(args) == 2:
+        await CosmicBotz.update_setting("watermark_text", args[1].strip())
+        await message.answer(f"✅ Watermark: <code>{args[1]}</code>", parse_mode="HTML")
 
 @router.message(Command("setlogo"))
 @owner_only
 async def cmd_setlogo(message: Message, **kwargs):
-    from database import CosmicBotz as _db
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.answer(
-            "📸 Reply to a <b>photo/logo</b> with <code>/setlogo</code>\n\n"
-            "The logo will appear in the top-right of every thumbnail alongside your watermark text.",
-            parse_mode="HTML"
-        )
-        return
-    file_id = message.reply_to_message.photo[-1].file_id
-    await _db.update_setting("watermark_logo_id", file_id)
-    await message.answer("✅ Logo watermark saved! It will appear on all new thumbnails.", parse_mode="HTML")
-
+    if message.reply_to_message and message.reply_to_message.photo:
+        file_id = message.reply_to_message.photo[-1].file_id
+        await CosmicBotz.update_setting("watermark_logo_id", file_id)
+        await message.answer("✅ Logo watermark saved!")
 
 @router.message(Command("clearwatermark"))
 @owner_only
 async def cmd_clearwatermark(message: Message, **kwargs):
-    from database import CosmicBotz as _db
-    await _db.update_setting("watermark_text", "")
-    await _db.update_setting("watermark_logo_id", "")
-    await message.answer("✅ Watermark cleared.", parse_mode="HTML")
+    await CosmicBotz.update_setting("watermark_text", "")
+    await CosmicBotz.update_setting("watermark_logo_id", "")
+    await message.answer("✅ Watermark cleared.")
 
-
-# ── Abbreviation commands ─────────────────────────────────────────────────────
+# ── Abbreviations ─────────────────────────────────────────────────────────────
 
 @router.message(Command("setabbr"))
 @admin_only
 async def cmd_setabbr(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or "=" not in args[1]:
-        abbr_map = await _db.get_abbr_map()
-        if abbr_map:
-            lines = "\n".join(f"<code>{k}</code> → {v}" for k, v in sorted(abbr_map.items()))
-        else:
-            lines = "<i>No abbreviations set yet.</i>"
-        await message.answer(
-            "🔤 <b>Abbreviations</b>\n\n"
-            f"{lines}\n\n"
-            "To add: <code>/setabbr AOT=Attack on Titan</code>\n"
-            "To remove: <code>/delabbr AOT</code>",
-            parse_mode="HTML"
-        )
+        abbr_map = await CosmicBotz.get_abbr_map()
+        lines = "\n".join(f"<code>{k}</code> → {v}" for k, v in sorted(abbr_map.items())) if abbr_map else "None"
+        await message.answer(f"🔤 <b>Abbreviations</b>\n\n{lines}", parse_mode="HTML")
         return
-    abbr, full = args[1].split("=", 1)
-    abbr = abbr.strip()
-    full = full.strip()
-    if not abbr or not full:
-        await message.answer("⚠️ Usage: <code>/setabbr AOT=Attack on Titan</code>", parse_mode="HTML")
-        return
-    await _db.set_abbr(abbr, full)
-    await message.answer(
-        f"✅ <code>{abbr.upper()}</code> → <b>{full}</b>",
-        parse_mode="HTML"
-    )
-
+    abbr, full = [x.strip() for x in args[1].split("=", 1)]
+    await CosmicBotz.set_abbr(abbr, full)
+    await message.answer(f"✅ <code>{abbr.upper()}</code> → <b>{full}</b>", parse_mode="HTML")
 
 @router.message(Command("delabbr"))
 @admin_only
 async def cmd_delabbr(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Usage: <code>/delabbr AOT</code>", parse_mode="HTML")
-        return
-    abbr = args[1].strip()
-    ok   = await _db.del_abbr(abbr)
-    if ok:
-        await message.answer(f"✅ Removed abbreviation: <code>{abbr.upper()}</code>", parse_mode="HTML")
-    else:
-        await message.answer(f"⚠️ <code>{abbr.upper()}</code> not found.", parse_mode="HTML")
+    if len(args) == 2:
+        ok = await CosmicBotz.del_abbr(args[1].strip())
+        await message.answer("✅ Removed" if ok else "⚠️ Not found")
 
-
-# ── /filters ──────────────────────────────────────────────────────────────────
+# ── Filters & Missed Searches ────────────────────────────────────────────────
 
 @router.message(Command("filters"))
 @owner_only
 async def cmd_filters(message: Message, **kwargs):
-    from database import CosmicBotz as _db
     from aiogram.types import BufferedInputFile
-
-    db     = _db.db()
+    db = CosmicBotz.db()
     cursor = db.filters.find({}).sort("title", 1)
-    docs   = await cursor.to_list(length=5000)
-
+    docs = await cursor.to_list(length=5000)
     if not docs:
-        await message.answer("📭 No filters saved yet.")
+        await message.answer("📭 No filters.")
         return
-
-    lines = []
-    for i, d in enumerate(docs, 1):
-        status  = "✅" if d.get("posted") else "⏳"
-        mtype   = d.get("media_type", "?").title()
-        year    = d.get("year", "")
-        year_str = (" (" + str(year) + ")") if year else ""
-        lines.append(str(i) + ". " + status + " [" + mtype + "] " + d.get("title", "?") + year_str)
-
-    total  = len(docs)
-    posted = sum(1 for d in docs if d.get("posted"))
-    header = (
-        "📋 All Filters (" + str(total) + " total | "
-        + str(posted) + " posted | "
-        + str(total - posted) + " pending)\n"
-        + "─" * 30 + "\n"
-    )
-
-    full_text = header + "\n".join(lines)
-
-    # Send as file if too long
+    lines = [f"{i}. {'✅' if d.get('posted') else '⏳'} [{d.get('media_type','?').title()}] {d.get('title','?')}" for i, d in enumerate(docs, 1)]
+    full_text = "📋 Filter List\n" + "\n".join(lines)
     if len(full_text) > 3500:
-        file_bytes = full_text.encode("utf-8")
-        await message.answer_document(
-            BufferedInputFile(file_bytes, filename="filters.txt"),
-            caption="📋 <b>All Filters</b> — " + str(total) + " total, " + str(posted) + " posted",
-            parse_mode="HTML"
-        )
+        await message.answer_document(BufferedInputFile(full_text.encode(), filename="filters.txt"))
     else:
-        await message.answer(
-            "<pre>" + full_text + "</pre>",
-            parse_mode="HTML"
-        )
-
-
-# ── /missed ───────────────────────────────────────────────────────────────────
+        await message.answer(f"<pre>{full_text}</pre>", parse_mode="HTML")
 
 async def _missed_text_and_kb(settings: dict, results: list) -> tuple:
     logging_on = settings.get("missed_logging", True)
     toggle_label = "🔴 Disable Logging" if logging_on else "🟢 Enable Logging"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=toggle_label,   callback_data="missed_toggle"),
-            InlineKeyboardButton(text="🗑 Clear All",  callback_data="missed_clear"),
-        ],
-        [InlineKeyboardButton(text="🔄 Refresh",      callback_data="missed_refresh")],
+        [InlineKeyboardButton(text=toggle_label, callback_data="missed_toggle"), 
+         InlineKeyboardButton(text="🗑 Clear All", callback_data="missed_clear")],
+        [InlineKeyboardButton(text="🔄 Refresh", callback_data="missed_refresh")],
     ])
     if not results:
-        text = (
-            "🔍 <b>Missed Searches</b>\n\n"
-            "✅ Nothing missed — all searches found results!\n\n"
-            "Logging: " + ("🟢 On" if logging_on else "🔴 Off")
-        )
+        text = f"🔍 <b>Missed Searches</b>\n\n✅ None! | Logging: {'On' if logging_on else 'Off'}"
     else:
-        lines = ["🔍 <b>Top Missed Searches</b>  |  Logging: " + ("🟢 On" if logging_on else "🔴 Off") + "\n"]
+        lines = [f"🔍 <b>Top Missed</b> | Logging: {'On' if logging_on else 'Off'}\n"]
         for i, r in enumerate(results, 1):
-            q      = r.get("query", "?")
-            count  = r.get("count", 1)
-            groups = len(r.get("groups", []))
-            lines.append(
-                str(i) + ". <code>" + q + "</code>"
-                " — <b>" + str(count) + "x</b>"
-                " in <b>" + str(groups) + "</b> group(s)"
-            )
-        lines.append("\n<i>Use /addcontent to fulfill these requests.</i>")
+            lines.append(f"{i}. <code>{r['query']}</code> — <b>{r['count']}x</b> in <b>{len(r.get('groups',[]))}</b>")
         text = "\n".join(lines)
     return text, kb
-
 
 @router.message(Command("missed"))
 @owner_only
@@ -696,28 +482,23 @@ async def cmd_missed(message: Message, **kwargs):
     text, kb = await _missed_text_and_kb(settings, results)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-
 @router.callback_query(F.data == "missed_toggle")
 async def cb_missed_toggle(call: CallbackQuery, **kwargs):
-    await call.answer()
-    settings    = await CosmicBotz.get_settings()
-    current     = settings.get("missed_logging", True)
-    new_val     = not current
+    settings = await CosmicBotz.get_settings()
+    new_val = not settings.get("missed_logging", True)
     await CosmicBotz.update_setting("missed_logging", new_val)
     settings["missed_logging"] = new_val
-    results     = await CosmicBotz.get_missed_searches(limit=15)
-    text, kb    = await _missed_text_and_kb(settings, results)
+    results = await CosmicBotz.get_missed_searches(limit=15)
+    text, kb = await _missed_text_and_kb(settings, results)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
 
 @router.callback_query(F.data == "missed_clear")
 async def cb_missed_clear(call: CallbackQuery, **kwargs):
-    await call.answer("🗑 Cleared!", show_alert=True)
     await CosmicBotz.db().search_logs.delete_many({})
-    settings    = await CosmicBotz.get_settings()
-    text, kb    = await _missed_text_and_kb(settings, [])
+    await call.answer("🗑 Cleared!", show_alert=True)
+    settings = await CosmicBotz.get_settings()
+    text, kb = await _missed_text_and_kb(settings, [])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
 
 @router.callback_query(F.data == "missed_refresh")
 async def cb_missed_refresh(call: CallbackQuery, **kwargs):
@@ -726,25 +507,3 @@ async def cb_missed_refresh(call: CallbackQuery, **kwargs):
     results  = await CosmicBotz.get_missed_searches(limit=15)
     text, kb = await _missed_text_and_kb(settings, results)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
-# ── Slot list pagination ──────────────────────────────────────────────────────
-# ── Updated Slot list pagination ──────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("slotpage_"))
-async def cb_slot_page(call: CallbackQuery, **kwargs):
-    await call.answer()
-    parts = call.data.split("_")   # slotpage_<prefix>_<page>
-    if len(parts) < 3 or parts[2] == "noop":
-        return
-    prefix = parts[1]
-    page   = int(parts[2])
-    
-    # CHANGED: Fetch all slots so pagination works for everyone
-    slots  = await CosmicBotz.get_slots_all() 
-    
-    if not slots:
-        await call.message.edit_text("📭 No slots found.")
-        return
-    await call.message.edit_reply_markup(
-        reply_markup=slot_list_keyboard(slots, page=page, prefix=prefix)
-    )
