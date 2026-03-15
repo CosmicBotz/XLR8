@@ -67,28 +67,41 @@ def confirm_add_keyboard() -> InlineKeyboardMarkup:
 SLOTS_PAGE_SIZE = 8
 
 def slot_list_keyboard(slots: list, page: int = 0, prefix: str = "slot") -> InlineKeyboardMarkup:
-    """Paginated slot list. prefix='slot' for /addcontent, prefix='rmslot' for /removeslot."""
-    total       = len(slots)
-    total_pages = max(1, -(-total // SLOTS_PAGE_SIZE))  # ceil division
-    start       = page * SLOTS_PAGE_SIZE
+    """
+    Paginated slot list. 
+    prefix='slot' (for /addcontent)
+    prefix='rmslot_p' (personal delete)
+    prefix='rmslot_g' (global delete)
+    """
+    # 1. Newest slots appear on Page 1
+    slots = list(reversed(slots)) 
+    
+    total = len(slots)
+    total_pages = max(1, -(-total // SLOTS_PAGE_SIZE))
+    start = page * SLOTS_PAGE_SIZE
     page_slots = slots[start : start + SLOTS_PAGE_SIZE]
 
     builder = InlineKeyboardBuilder()
     for slot in page_slots:
+        # 2. Limit text to prevent button errors
+        label = f"📢 {slot['slot_name']}"[:45]
         builder.button(
-            text=f"📢 {slot['slot_name']}",
+            text=label, 
             callback_data=f"{prefix}_{slot['channel_id']}"
         )
     builder.adjust(1)
 
-    # Nav row — only show if more than one page
     if total_pages > 1:
         nav = []
+        # 3. Dynamic Prefixing: remembers which menu you are in
         if page > 0:
             nav.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"slotpage_{prefix}_{page-1}"))
+        
         nav.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="slotpage_noop"))
+        
         if page < total_pages - 1:
             nav.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"slotpage_{prefix}_{page+1}"))
+        
         builder.row(*nav)
 
     return builder.as_markup()
