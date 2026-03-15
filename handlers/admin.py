@@ -80,8 +80,8 @@ async def slot_got_name(message: Message, state: FSMContext):
 
 @router.message(Command("slots"))
 @owner_only
-async def cmd_slots(message: Message, is_owner: bool = False, **kwargs):
-    slots = await CosmicBotz.get_slots(message.from_user.id, is_owner=is_owner)
+async def cmd_slots(message: Message, **kwargs):
+    slots = await CosmicBotz.get_slots(message.from_user.id)
     if not slots:
         await message.answer("📭 No slots configured. Use /addslot to add one.")
         return
@@ -96,7 +96,7 @@ async def cmd_slots(message: Message, is_owner: bool = False, **kwargs):
 
 @router.message(Command("removeslot"))
 @owner_only
-async def cmd_removeslot(message: Message, is_owner: bool = False, **kwargs):
+async def cmd_removeslot(message: Message, **kwargs):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer("Usage: <code>/removeslot CHANNEL_ID</code>", parse_mode="HTML")
@@ -107,7 +107,7 @@ async def cmd_removeslot(message: Message, is_owner: bool = False, **kwargs):
         await message.answer("⚠️ Invalid channel ID.")
         return
 
-    ok = await CosmicBotz.remove_slot(message.from_user.id, channel_id, is_owner=is_owner)
+    ok = await CosmicBotz.remove_slot(message.from_user.id, channel_id)
     if ok:
         await message.answer(f"✅ Slot removed for <code>{channel_id}</code>.", parse_mode="HTML")
     else:
@@ -654,39 +654,88 @@ async def cmd_filters(message: Message, **kwargs):
 
 # ── /missed ───────────────────────────────────────────────────────────────────
 
+async def _missed_text_and_kb(settings: dict, results: list) -> tuple:
+    logging_on = settings.get("missed_logging", True)
+    toggle_label = "🔴 Disable Logging" if logging_on else "🟢 Enable Logging"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=toggle_label,   callback_data="missed_toggle"),
+            InlineKeyboardButton(text="🗑 Clear All",  callback_data="missed_clear"),
+        ],
+        [InlineKeyboardButton(text="🔄 Refresh",      callback_data="missed_refresh")],
+    ])
+    if not results:
+        text = (
+            "🔍 <b>Missed Searches</b>\n\n"
+            "✅ Nothing missed — all searches found results!\n\n"
+            "Logging: " + ("🟢 On" if logging_on else "🔴 Off")
+        )
+    else:
+        lines = ["🔍 <b>Top Missed Searches</b>  |  Logging: " + ("🟢 On" if logging_on else "🔴 Off") + "\n"]
+        for i, r in enumerate(results, 1):
+            q      = r.get("query", "?")
+            count  = r.get("count", 1)
+            groups = len(r.get("groups", []))
+            lines.append(
+                str(i) + ". <code>" + q + "</code>"
+                " — <b>" + str(count) + "x</b>"
+                " in <b>" + str(groups) + "</b> group(s)"
+            )
+        lines.append("\n<i>Use /addcontent to fulfill these requests.</i>")
+        text = "\n".join(lines)
+    return text, kb
+
+
 @router.message(Command("missed"))
 @owner_only
 async def cmd_missed(message: Message, **kwargs):
-    results = await CosmicBotz.get_missed_searches(limit=15)
-    if not results:
-        await message.answer("✅ No missed searches yet — everything found!")
-        return
+    settings = await CosmicBotz.get_settings()
+    results  = await CosmicBotz.get_missed_searches(limit=15)
+    text, kb = await _missed_text_and_kb(settings, results)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-    lines = ["🔍 <b>Top Missed Searches</b>\n"]
-    for i, r in enumerate(results, 1):
-        q      = r.get("query", "?")
-        count  = r.get("count", 1)
-        groups = len(r.get("groups", []))
-        lines.append(
-            str(i) + ". <code>" + q + "</code>"
-            " — <b>" + str(count) + "x</b>"
-            " in <b>" + str(groups) + "</b> group(s)"
-        )
 
-    lines.append("\n<i>Add content with /addcontent to clear these.</i>")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+@router.callback_query(F.data == "missed_toggle")
+async def cb_missed_toggle(call: CallbackQuery, **kwargs):
+    await call.answer()
+    settings    = await CosmicBotz.get_settings()
+    current     = settings.get("missed_logging", True)
+    new_val     = not current
+    await CosmicBotz.update_setting("missed_logging", new_val)
+    settings["missed_logging"] = new_val
+    results     = await CosmicBotz.get_missed_searches(limit=15)
+    text, kb    = await _missed_text_and_kb(settings, results)
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "missed_clear")
+async def cb_missed_clear(call: CallbackQuery, **kwargs):
+    await call.answer("🗑 Cleared!", show_alert=True)
+    await CosmicBotz.db().search_logs.delete_many({})
+    settings    = await CosmicBotz.get_settings()
+    text, kb    = await _missed_text_and_kb(settings, [])
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "missed_refresh")
+async def cb_missed_refresh(call: CallbackQuery, **kwargs):
+    await call.answer()
+    settings = await CosmicBotz.get_settings()
+    results  = await CosmicBotz.get_missed_searches(limit=15)
+    text, kb = await _missed_text_and_kb(settings, results)
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 # ── Slot list pagination ──────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("slotpage_"))
-async def cb_slot_page(call: CallbackQuery, is_owner: bool = False, **kwargs):
+async def cb_slot_page(call: CallbackQuery, **kwargs):
     await call.answer()
     parts = call.data.split("_")   # slotpage_<prefix>_<page>
     if len(parts) < 3 or parts[2] == "noop":
         return
     prefix = parts[1]
     page   = int(parts[2])
-    slots  = await CosmicBotz.get_slots(call.from_user.id, is_owner=is_owner)
+    slots  = await CosmicBotz.get_slots(call.from_user.id)
     if not slots:
         await call.message.edit_text("📭 No slots found.")
         return
