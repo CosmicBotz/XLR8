@@ -20,6 +20,13 @@ def index_results_keyboard(results: list) -> InlineKeyboardMarkup:
             text=f"🎬 {title}",
             callback_data=f"show_{str(item['_id'])}"
         )
+    
+    # ADDED: Close button for the index
+    builder.button(
+        text="❌ Close",
+        callback_data="close_index"
+    )
+    
     builder.adjust(1)
     return builder.as_markup()
 
@@ -61,9 +68,9 @@ SLOTS_PAGE_SIZE = 8
 
 def slot_list_keyboard(slots: list, page: int = 0, prefix: str = "slot") -> InlineKeyboardMarkup:
     """Paginated slot list. prefix='slot' for /addcontent, prefix='rmslot' for /removeslot."""
-    total      = len(slots)
+    total       = len(slots)
     total_pages = max(1, -(-total // SLOTS_PAGE_SIZE))  # ceil division
-    start      = page * SLOTS_PAGE_SIZE
+    start       = page * SLOTS_PAGE_SIZE
     page_slots = slots[start : start + SLOTS_PAGE_SIZE]
 
     builder = InlineKeyboardBuilder()
