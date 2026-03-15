@@ -129,7 +129,9 @@ async def _handle_filter(
         results  = await CosmicBotz.search_title(text)
 
         if not results:
-            await CosmicBotz.log_missed_search(text, uid, gid)
+            settings = await CosmicBotz.get_settings()
+            if settings.get("missed_logging", True):
+                await CosmicBotz.log_missed_search(text, uid, gid)
             return
 
         await CosmicBotz.log_search(text, uid, gid, found=True)
@@ -218,13 +220,18 @@ async def cb_show_title(
     settings       = await CosmicBotz.get_settings()
     revoke_minutes = settings.get("auto_revoke_minutes", 30)
 
+    # Original user search message (index msg is a reply to it)
+    orig_msg_id = None
+    if call.message.reply_to_message:
+        orig_msg_id = call.message.reply_to_message.message_id
+
     # Delete index message immediately
     try:
         await call.message.delete()
     except Exception:
         pass
 
-    await _send_post(bot, item, chat_id, revoke_minutes, call.message.message_id)
+    await _send_post(bot, item, chat_id, revoke_minutes, orig_msg_id)
 
 
 @router.callback_query(F.data.startswith("nf_"))
