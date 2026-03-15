@@ -581,7 +581,7 @@ class Database:
 
     async def get_slots_all(self) -> list:
         db = self.db()
-        return await db.slots.find({}).to_list(length=50)
+        return await db.slots.find({}).to_list(length=None)
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
