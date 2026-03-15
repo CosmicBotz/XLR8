@@ -482,7 +482,7 @@ async def cmd_delabbr(message: Message, **kwargs):
 
 # ── Filters & Missed Searches ────────────────────────────────────────────────
 
-@router.message(Command("filters"))
+@router.message(Command(["filters", "lists"]))
 @owner_only
 async def cmd_filters(message: Message, **kwargs):
     from aiogram.types import BufferedInputFile
