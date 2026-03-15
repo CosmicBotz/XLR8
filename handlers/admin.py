@@ -18,6 +18,29 @@ class AddSlotState(StatesGroup):
 
 # ── /addslot (FSM Logic) ─────────────────────────────────────────────────────
 
+@router.message(Command("fixdb"), F.from_user.id == OWNER_ID)
+async def cmd_fix_database(message: Message):
+    """
+    Temporary Owner-only command to migrate the database
+    to the new normalized search & acronym system.
+    """
+    status_msg = await message.reply("⚙️ **Migration Started...**\nProcessing old database entries...")
+    
+    try:
+        # Calls the function we just added to database.py
+        count = await CosmicBotz.temp_fix_database()
+        
+        await status_msg.edit_text(
+            f"✅ **Migration Successful!**\n\n"
+            f"🔸 **Updated:** `{count}` entries\n"
+            f"🔸 **System:** Normalized Search & Smart Acronyms\n\n"
+            f"You can now test search results for titles like 'Hana-Kimi' using 'hana kimi'."
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ **Migration Failed!**\nError: `{e}`")
+        logger.error(f"Migration Error: {e}")
+
+
 @router.message(Command("addslot"))
 @owner_only
 @dm_only
