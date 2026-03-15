@@ -76,17 +76,19 @@ async def slot_got_name(message: Message, state: FSMContext):
         await message.answer(f"⚠️ {msg}")
 
 
-# ── /slots ────────────────────────────────────────────────────────────────────
+
+# ── Updated /slots ────────────────────────────────────────────────────────────
 
 @router.message(Command("slots"))
 @owner_only
 async def cmd_slots(message: Message, **kwargs):
-    slots = await CosmicBotz.get_slots(message.from_user.id)
+    # CHANGED: Use get_slots_all() instead of filtering by user_id
+    slots = await CosmicBotz.get_slots_all() 
     if not slots:
         await message.answer("📭 No slots configured. Use /addslot to add one.")
         return
     await message.answer(
-        f"📋 <b>Your Slots ({len(slots)})</b>\n<i>Tap a slot to remove it.</i>",
+        f"📋 <b>All Configured Slots ({len(slots)})</b>\n<i>Tap a slot to remove it.</i>",
         reply_markup=slot_list_keyboard(slots, page=0, prefix="rmslot"),
         parse_mode="HTML"
     )
@@ -726,6 +728,7 @@ async def cb_missed_refresh(call: CallbackQuery, **kwargs):
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 # ── Slot list pagination ──────────────────────────────────────────────────────
+# ── Updated Slot list pagination ──────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("slotpage_"))
 async def cb_slot_page(call: CallbackQuery, **kwargs):
@@ -735,7 +738,10 @@ async def cb_slot_page(call: CallbackQuery, **kwargs):
         return
     prefix = parts[1]
     page   = int(parts[2])
-    slots  = await CosmicBotz.get_slots(call.from_user.id)
+    
+    # CHANGED: Fetch all slots so pagination works for everyone
+    slots  = await CosmicBotz.get_slots_all() 
+    
     if not slots:
         await call.message.edit_text("📭 No slots found.")
         return
