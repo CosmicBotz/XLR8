@@ -128,25 +128,44 @@ async def cmd_removeslot(message: Message, **kwargs):
 
 @router.callback_query(F.data.startswith("slotpage_"))
 async def cb_slot_page(call: CallbackQuery, **kwargs):
+    """Universal Pagination Handler for all Slot Lists"""
     await call.answer()
-    parts = call.data.split("_")  # slotpage_rmslot_<p/g>_<page>
-    if len(parts) < 4 or parts[3] == "noop":
+    parts = call.data.split("_") 
+    
+    # Format: slotpage_{prefix}_{page}
+    if len(parts) < 3 or parts[-1] == "noop":
         return
     
-    view_type = parts[2] # 'p' or 'g'
-    page      = int(parts[3])
+    try:
+        page = int(parts[-1])
+        # Reconstructs prefix (e.g., 'slot' or 'rmslot_p')
+        prefix = "_".join(parts[1:-1]) 
+    except ValueError:
+        return
 
-    if view_type == "p":
+    is_owner = (call.from_user.id == OWNER_ID)
+
+    # --- OWNER BYPASS & DATA FETCHING ---
+    if prefix == "rmslot_g" and is_owner:
+        # Owner managing global slots
+        slots = await CosmicBotz.get_slots_all()
+    elif prefix == "rmslot_p":
+        # Admin managing personal slots
         slots = await CosmicBotz.get_slots(call.from_user.id)
     else:
-        slots = await CosmicBotz.get_slots_all() 
+        # Standard flow (e.g., /addcontent)
+        # Owner sees all channels, Admins see only theirs
+        if is_owner:
+            slots = await CosmicBotz.get_slots_all()
+        else:
+            slots = await CosmicBotz.get_slots(call.from_user.id)
 
     if not slots:
         await call.message.edit_text("📭 No slots found.")
         return
         
     await call.message.edit_reply_markup(
-        reply_markup=slot_list_keyboard(slots, page=page, prefix=f"rmslot_{view_type}")
+        reply_markup=slot_list_keyboard(slots, page=page, prefix=prefix)
     )
 
 @router.callback_query(F.data.startswith("rmslot_"))
